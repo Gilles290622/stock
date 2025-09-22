@@ -1,0 +1,27 @@
+# Node
+node_modules/
+**/node_modules/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Env and secrets
+.env
+**/.env
+backend/.env
+frontend/.env
+
+# Build outputs
+frontend/dist/
+backend/dist/
+
+# Uploads and generated files
+backend/uploads/
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+.vscode/
