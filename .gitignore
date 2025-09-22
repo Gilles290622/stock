@@ -1,5 +1,33 @@
 # Node
 node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# Build outputs
+dist/
+frontend/dist/
+
+# Env files (never commit secrets)
+.env
+*.env
+backend/.env
+frontend/.env
+.env.local
+.env.*.local
+
+# Uploads and generated assets
+backend/uploads/
+
+# Local SQL setup (contains secrets, keep local only)
+backend/sql/000_setup_local.sql
+
+# Editor/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+# Node
+node_modules/
 **/node_modules/
 
 # Logs
