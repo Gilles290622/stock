@@ -73,8 +73,7 @@ async function getOrCreateDesignation(conn, userId, designation_id, designation_
     const [rows] = await conn.query(
       `SELECT id, current_stock
          FROM stock_designations
-        WHERE id = ? AND user_id = ?
-        FOR UPDATE`,
+        WHERE id = ? AND user_id = ?`,
       [idNorm, userId]
     );
     if (rows.length > 0) return { id: rows[0].id, current_stock: Number(rows[0].current_stock ?? 0) };
@@ -86,20 +85,39 @@ async function getOrCreateDesignation(conn, userId, designation_id, designation_
   let [byName] = await conn.query(
     `SELECT id, current_stock
        FROM stock_designations
-      WHERE name = ? AND user_id = ?
-      FOR UPDATE`,
-    [name, userId]
+      WHERE user_id = ? AND LOWER(name) = LOWER(?)`,
+    [userId, name]
   );
   if (byName.length > 0) {
     return { id: byName[0].id, current_stock: Number(byName[0].current_stock ?? 0) };
   }
 
-  const [ins] = await conn.execute(
-    `INSERT INTO stock_designations (name, user_id, current_stock)
-     VALUES (?, ?, 0)`,
-    [name, userId]
-  );
-  return { id: ins.insertId, current_stock: 0 };
+  try {
+    const [ins] = await conn.execute(
+      `INSERT INTO stock_designations (name, user_id, current_stock)
+       VALUES (?, ?, 0)`,
+      [name, userId]
+    );
+    return { id: ins.insertId, current_stock: 0 };
+  } catch (e) {
+    // Gestion des erreurs de contrainte pour différentes bases de données
+    const msg = String(e?.message || e?.code || '');
+    if (
+      msg.includes('UNIQUE') ||
+      msg.includes('constraint') ||
+      msg.includes('SQLITE_CONSTRAINT') ||
+      msg.includes('Duplicate entry')
+    ) {
+      const [retry] = await conn.query(
+        `SELECT id, current_stock FROM stock_designations WHERE user_id = ? AND LOWER(name) = LOWER(?)`,
+        [userId, name]
+      );
+      if (retry.length > 0) {
+        return { id: retry[0].id, current_stock: Number(retry[0].current_stock ?? 0) };
+      }
+    }
+    throw e;
+  }
 }
 
 async function getOrCreateClient(conn, userId, client_id, client_name) {
@@ -120,17 +138,34 @@ async function getOrCreateClient(conn, userId, client_id, client_name) {
   let [byName] = await conn.query(
     `SELECT id
        FROM stock_clients
-      WHERE name = ? AND user_id = ?`,
-    [name, userId]
+      WHERE user_id = ? AND LOWER(name) = LOWER(?)`,
+    [userId, name]
   );
   if (byName.length > 0) return byName[0].id;
 
-  const [ins] = await conn.execute(
-    `INSERT INTO stock_clients (name, user_id)
-     VALUES (?, ?)`,
-    [name, userId]
-  );
-  return ins.insertId;
+  try {
+    const [ins] = await conn.execute(
+      `INSERT INTO stock_clients (name, user_id)
+       VALUES (?, ?)`,
+      [name, userId]
+    );
+    return ins.insertId;
+  } catch (e) {
+    const msg = String(e?.message || e?.code || '');
+    if (
+      msg.includes('UNIQUE') ||
+      msg.includes('constraint') ||
+      msg.includes('SQLITE_CONSTRAINT') ||
+      msg.includes('Duplicate entry')
+    ) {
+      const [retry] = await conn.query(
+        `SELECT id FROM stock_clients WHERE user_id = ? AND LOWER(name) = LOWER(?)`,
+        [userId, name]
+      );
+      if (retry.length > 0) return retry[0].id;
+    }
+    throw e;
+  }
 }
 
 // GET /api/stockMouvements — liste avec noms liés
@@ -143,7 +178,7 @@ router.get('/', authenticateToken, async (req, res) => {
       SELECT
         sm.id,
         sm.user_id,
-        DATE_FORMAT(sm.\`date\`, '%Y-%m-%d') AS date,
+        strftime('%Y-%m-%d', sm.date) AS date,
         sm.type,
         sm.designation_id,
         sm.stock,
@@ -162,23 +197,35 @@ router.get('/', authenticateToken, async (req, res) => {
         ON c.id = sm.client_id
        AND c.user_id = sm.user_id
       WHERE sm.user_id = ?
-      ORDER BY sm.\`date\` DESC, sm.id DESC
+      ORDER BY sm.date DESC, sm.id DESC
       `,
       [userId]
     );
 
     res.json(rows);
   } catch (err) {
-    console.error('Erreur GET mouvements:', err);
-    res.status(500).json({ error: 'Erreur lors de la récupération des mouvements' });
+    console.error('Erreur GET mouvements:', err.stack || err);
+    res.status(500).json({
+      error: 'Erreur lors de la récupération des mouvements',
+      details: err.message || String(err),
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
   }
 });
 
 // POST /api/stockMouvements — entree ajoute, sortie retranche (client OBLIGATOIRE)
 router.post('/', authenticateToken, async (req, res) => {
+  console.log('Requête POST reçue pour stockMouvements:', req.body);
   let conn;
   try {
     const userId = req.user.id;
+    console.log('Utilisateur authentifié:', req.user);
+
+    // Vérifie que l'utilisateur existe
+    const [userRows] = await pool.query(`SELECT id FROM users WHERE id = ?`, [userId]);
+    if (!Array.isArray(userRows) || userRows.length === 0) {
+      return res.status(401).json({ error: 'Session invalide. Veuillez vous reconnecter.' });
+    }
 
     const payload = {
       ...req.body,
@@ -215,12 +262,17 @@ router.post('/', authenticateToken, async (req, res) => {
     const newCurrent = currentStock + delta;
     const stockR = Math.trunc(newCurrent);
 
+    // Empêcher un stock négatif lors d'une sortie
+    if (typeNorm === 'sortie' && newCurrent < 0) {
+      throw new Error('Stock insuffisant');
+    }
+
     const [result] = await conn.execute(
-  `INSERT INTO stock_mouvements
-    (\`date\`, type, designation_id, quantite, prix, client_id, stock, stockR, user_id)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  [date, typeNorm, des.id, qty, unitPrice, cliId, stock, stockR, userId]
-);
+      `INSERT INTO stock_mouvements
+      (date, type, designation_id, quantite, prix, client_id, stock, stockR, user_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [date, typeNorm, des.id, qty, unitPrice, cliId, stock, stockR, userId]
+    );
 
     await conn.execute(
       `UPDATE stock_designations SET current_stock = ? WHERE id = ? AND user_id = ?`,
@@ -228,8 +280,9 @@ router.post('/', authenticateToken, async (req, res) => {
     );
 
     await conn.commit();
+    const newId = result?.insertId ?? result?.lastID ?? result?.lastInsertRowid ?? result?.lastInsertId;
     res.status(201).json({
-      id: result.insertId,
+      id: newId,
       type: typeNorm,
       designation_id: des.id,
       client_id: cliId,
@@ -252,8 +305,12 @@ router.post('/', authenticateToken, async (req, res) => {
     ) {
       return res.status(400).json({ error: msg });
     }
-    console.error('Erreur POST mouvement:', err && (err.stack || err));
-    res.status(500).json({ error: "Erreur lors de l'ajout du mouvement" });
+    console.error('Erreur POST mouvement:', err.stack || err);
+    res.status(500).json({
+      error: "Erreur lors de l'ajout du mouvement",
+      details: err.message || String(err),
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
   } finally {
     if (conn) conn.release();
   }
@@ -261,6 +318,7 @@ router.post('/', authenticateToken, async (req, res) => {
 
 // PATCH /api/stockMouvements/:id — édition avec recalculs (client OBLIGATOIRE au final)
 router.patch('/:id', authenticateToken, async (req, res) => {
+  console.log('Requête PATCH reçue pour stockMouvements/:id:', req.params.id, req.body);
   let conn;
   try {
     const userId = req.user.id;
@@ -304,7 +362,7 @@ router.patch('/:id', authenticateToken, async (req, res) => {
     // Lire le mouvement actuel (date formatée)
     const [rows] = await conn.query(
       `SELECT id,
-              DATE_FORMAT(\`date\`, '%Y-%m-%d') AS date,
+              strftime('%Y-%m-%d', date) AS date,
               type, designation_id, quantite, prix, client_id
          FROM stock_mouvements
         WHERE id = ? AND user_id = ?`,
@@ -324,7 +382,7 @@ router.patch('/:id', authenticateToken, async (req, res) => {
     // Verrouille l'ancienne désignation
     const [oldDesRows] = await conn.query(
       `SELECT id, current_stock FROM stock_designations
-        WHERE id = ? AND user_id = ? FOR UPDATE`,
+        WHERE id = ? AND user_id = ?`,
       [oldDesId, userId]
     );
     if (!oldDesRows.length) {
@@ -342,7 +400,7 @@ router.patch('/:id', authenticateToken, async (req, res) => {
       if (targetDesId !== oldDesId) {
         const [nd] = await conn.query(
           `SELECT id, current_stock FROM stock_designations
-           WHERE id = ? AND user_id = ? FOR UPDATE`,
+           WHERE id = ? AND user_id = ?`,
           [targetDesId, userId]
         );
         if (!nd.length) {
@@ -377,7 +435,7 @@ router.patch('/:id', authenticateToken, async (req, res) => {
       `UPDATE stock_mouvements
           SET stock = stock - ?, stockR = stockR - ?
         WHERE user_id = ? AND designation_id = ?
-          AND (\`date\` > ? OR (\`date\` = ? AND id > ?))`,
+          AND (date > ? OR (date = ? AND id > ?))`,
       [oldDelta, oldDelta, userId, oldDesId, oldDate, oldDate, id]
     );
 
@@ -388,27 +446,27 @@ router.patch('/:id', authenticateToken, async (req, res) => {
         WHERE user_id = ?
           AND designation_id = ?
           AND id <> ?
-          AND (\`date\` < ? OR (\`date\` = ? AND id < ?))`,
+          AND (date < ? OR (date = ? AND id < ?))`,
       [userId, targetDesId, id, finalDate, finalDate, id]
     );
     const baseSum = Number(baseRow?.total ?? 0);
     const newStock = Math.trunc(baseSum);
     const newStockR = Math.trunc(baseSum + newDelta);
 
-    // 3) Mettre à jour la ligne (NE PAS toucher à 'montant' s'il est généré)
+    // 3) Mettre à jour la ligne
     await conn.execute(
       `UPDATE stock_mouvements
-          SET \`date\` = ?, type = ?, designation_id = ?, quantite = ?, prix = ?, client_id = ?, stock = ?, stockR = ?
+          SET date = ?, type = ?, designation_id = ?, quantite = ?, prix = ?, client_id = ?, stock = ?, stockR = ?
         WHERE id = ? AND user_id = ?`,
       [finalDate, finalType, targetDesId, finalQty, finalPrice, targetClientId, newStock, newStockR, id, userId]
     );
 
-    // 4) Propager le nouvel impact (comme INSERT)
+    // 4) Propager le nouvel impact
     await conn.execute(
       `UPDATE stock_mouvements
           SET stock = stock + ?, stockR = stockR + ?
         WHERE user_id = ? AND designation_id = ?
-          AND (\`date\` > ? OR (\`date\` = ? AND id > ?))`,
+          AND (date > ? OR (date = ? AND id > ?))`,
       [newDelta, newDelta, userId, targetDesId, finalDate, finalDate, id]
     );
 
@@ -436,7 +494,6 @@ router.patch('/:id', authenticateToken, async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     if (conn) await conn.rollback();
-    console.error('Erreur PATCH mouvement:', err && (err.stack || err));
     const msg = String(err?.message || '');
     if (
       msg.startsWith('Format de date invalide') ||
@@ -449,15 +506,20 @@ router.patch('/:id', authenticateToken, async (req, res) => {
     ) {
       return res.status(400).json({ error: msg });
     }
-    res.status(500).json({ error: "Erreur lors de la mise à jour du mouvement" });
+    console.error('Erreur PATCH mouvement:', err.stack || err);
+    res.status(500).json({
+      error: "Erreur lors de la mise à jour du mouvement",
+      details: err.message || String(err),
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
   } finally {
     if (conn) conn.release();
   }
 });
 
 // DELETE /api/stockMouvements/:id — supprime n'importe quelle ligne et réajuste
-// Remplace la fin de ta route DELETE par ce bloc (ou adapte ton fichier existant)
 router.delete('/:id', authenticateToken, async (req, res) => {
+  console.log('Requête DELETE reçue pour stockMouvements/:id:', req.params.id);
   let conn;
   try {
     const userId = req.user.id;
@@ -469,19 +531,18 @@ router.delete('/:id', authenticateToken, async (req, res) => {
     conn = await pool.getConnection();
     await conn.beginTransaction();
 
-
-    // Partie du router.delete — ajoute ce logging avant de renvoyer 404
-const [movRows] = await conn.query(
-  `SELECT id, designation_id, type, quantite, DATE_FORMAT(\`date\`, '%Y-%m-%d') AS date
-     FROM stock_mouvements
-    WHERE id = ? AND user_id = ?`,
-  [id, userId]
-);
-if (movRows.length === 0) {
-  console.warn(`DELETE stock_mouvements: mouvement introuvable id=${id} userId=${userId}`);
-  await conn.rollback();
-  return res.status(404).json({ error: 'Mouvement introuvable' });
-}
+    // Lire le mouvement
+    const [movRows] = await conn.query(
+      `SELECT id, designation_id, type, quantite, strftime('%Y-%m-%d', date) AS date
+         FROM stock_mouvements
+        WHERE id = ? AND user_id = ?`,
+      [id, userId]
+    );
+    if (movRows.length === 0) {
+      console.warn(`DELETE stock_mouvements: mouvement introuvable id=${id} userId=${userId}`);
+      await conn.rollback();
+      return res.status(404).json({ error: 'Mouvement introuvable' });
+    }
     
     const mov = movRows[0];
 
@@ -492,12 +553,11 @@ if (movRows.length === 0) {
       return res.json({ success: true, adjusted_rows: 0, current_stock: null, updated_movements: [] });
     }
 
-    // Verrouille la désignation
+    // Charger la désignation
     const [desRows] = await conn.query(
       `SELECT current_stock
          FROM stock_designations
-        WHERE id = ? AND user_id = ?
-        FOR UPDATE`,
+        WHERE id = ? AND user_id = ?`,
       [mov.designation_id, userId]
     );
     if (!desRows.length) {
@@ -515,7 +575,7 @@ if (movRows.length === 0) {
       `UPDATE stock_mouvements
           SET stock = stock - ?, stockR = stockR - ?
         WHERE user_id = ? AND designation_id = ?
-          AND (\`date\` > ? OR (\`date\` = ? AND id > ?))`,
+          AND (date > ? OR (date = ? AND id > ?))`,
       [delta, delta, userId, mov.designation_id, mov.date, mov.date, mov.id]
     );
 
@@ -532,18 +592,17 @@ if (movRows.length === 0) {
       [newCurrent, mov.designation_id, userId]
     );
 
-    // Récupère l'état canonique des mouvements pour cette désignation (mis à jour)
+    // Récupère l'état canonique des mouvements pour cette désignation
     const [updatedMovements] = await conn.query(
-      `SELECT id, designation_id, type, quantite, DATE_FORMAT(\`date\`, '%Y-%m-%d') AS date, stock, stockR, created_at
+      `SELECT id, designation_id, type, quantite, strftime('%Y-%m-%d', date) AS date, stock, stockR, created_at
          FROM stock_mouvements
         WHERE user_id = ? AND designation_id = ?
-        ORDER BY \`date\` ASC, id ASC`,
+        ORDER BY date ASC, id ASC`,
       [userId, mov.designation_id]
     );
 
     await conn.commit();
 
-    // Renvoie les mouvements mis à jour + current_stock pour que le client puisse synchroniser exactement
     res.json({
       success: true,
       adjusted_rows: updRes.affectedRows,
@@ -552,8 +611,12 @@ if (movRows.length === 0) {
     });
   } catch (err) {
     if (conn) await conn.rollback();
-    console.error('Erreur DELETE mouvement:', err && (err.stack || err));
-    res.status(500).json({ error: 'Erreur lors de la suppression du mouvement' });
+    console.error('Erreur DELETE mouvement:', err.stack || err);
+    res.status(500).json({
+      error: 'Erreur lors de la suppression du mouvement',
+      details: err.message || String(err),
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
   } finally {
     if (conn) conn.release();
   }

@@ -49,12 +49,12 @@ router.get('/', authenticateToken, async (req, res) => {
          sp.id,
          sp.mouvement_id,
          sp.user_id,
-         DATE_FORMAT(sp.\`date\`, '%Y-%m-%d') AS date,
+         strftime('%Y-%m-%d', sp.date) AS date,
          sp.montant,
          sp.created_at
        FROM stock_paiements sp
        WHERE sp.mouvement_id = ?
-       ORDER BY sp.\`date\` ASC, sp.id ASC`,
+       ORDER BY sp.date ASC, sp.id ASC`,
       [mouvementId]
     );
 
@@ -85,8 +85,7 @@ router.post('/', authenticateToken, async (req, res) => {
     const [movRows] = await conn.query(
       `SELECT id, montant
          FROM stock_mouvements
-        WHERE id = ? AND user_id = ?
-        FOR UPDATE`,
+        WHERE id = ? AND user_id = ?`,
       [movId, userId]
     );
     if (movRows.length === 0) {
@@ -98,8 +97,7 @@ router.post('/', authenticateToken, async (req, res) => {
     const [[sumRow]] = await conn.query(
       `SELECT COALESCE(SUM(montant), 0) AS total
          FROM stock_paiements
-        WHERE mouvement_id = ?
-        FOR UPDATE`,
+        WHERE mouvement_id = ?`,
       [movId]
     );
     const dejaPaye = Number(sumRow.total) || 0;
@@ -173,12 +171,11 @@ router.patch('/:id', authenticateToken, async (req, res) => {
 
     // Verrouiller le paiement + mouvement et vérifier appartenance
     const [payRows] = await conn.query(
-      `SELECT sp.id, sp.mouvement_id, sp.montant, DATE_FORMAT(sp.\`date\`, '%Y-%m-%d') AS date,
+      `SELECT sp.id, sp.mouvement_id, sp.montant, strftime('%Y-%m-%d', sp.date) AS date,
               sm.montant AS mouvement_montant, sm.user_id
          FROM stock_paiements sp
          JOIN stock_mouvements sm ON sm.id = sp.mouvement_id
-        WHERE sp.id = ?
-        FOR UPDATE`,
+        WHERE sp.id = ?`,
       [id]
     );
     if (payRows.length === 0) {
@@ -198,8 +195,7 @@ router.patch('/:id', authenticateToken, async (req, res) => {
     const [[sumRow]] = await conn.query(
       `SELECT COALESCE(SUM(montant), 0) AS total
          FROM stock_paiements
-        WHERE mouvement_id = ? AND id <> ?
-        FOR UPDATE`,
+        WHERE mouvement_id = ? AND id <> ?`,
       [movId, id]
     );
     const totalAutres = Number(sumRow.total) || 0;
@@ -254,8 +250,7 @@ router.delete('/:id', authenticateToken, async (req, res) => {
       `SELECT sp.id, sp.mouvement_id, sp.montant, sm.montant AS mouvement_montant, sm.user_id
          FROM stock_paiements sp
          JOIN stock_mouvements sm ON sm.id = sp.mouvement_id
-        WHERE sp.id = ?
-        FOR UPDATE`,
+        WHERE sp.id = ?`,
       [id]
     );
     if (payRows.length === 0) {
@@ -275,8 +270,7 @@ router.delete('/:id', authenticateToken, async (req, res) => {
     const [[sumRow]] = await conn.query(
       `SELECT COALESCE(SUM(montant), 0) AS total
          FROM stock_paiements
-        WHERE mouvement_id = ?
-        FOR UPDATE`,
+        WHERE mouvement_id = ?`,
       [row.mouvement_id]
     );
     const totalPaye = Number(sumRow.total) || 0;

@@ -11,7 +11,7 @@ router.get('/search', authenticateToken, async (req, res) => {
     const userId = req.user.id;
     const like = `%${q}%`;
     const [rows] = await pool.execute(
-      `SELECT id, name FROM stock_clients WHERE user_id = ? AND LOWER(name) LIKE LOWER(?) ORDER BY name LIMIT 10`,
+      `SELECT id, name, contact FROM stock_clients WHERE user_id = ? AND LOWER(name) LIKE LOWER(?) ORDER BY name LIMIT 10`,
       [userId, like]
     );
     res.json(rows);
@@ -26,7 +26,7 @@ router.get('/', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
     const [rows] = await pool.execute(
-      'SELECT id, name FROM stock_clients WHERE user_id = ? ORDER BY name LIMIT 20', [userId]
+      'SELECT id, name, contact FROM stock_clients WHERE user_id = ? ORDER BY name LIMIT 20', [userId]
     );
     res.json(rows);
   } catch (err) {
@@ -85,7 +85,7 @@ router.get('/:id', authenticateToken, async (req, res) => {
     }
     const userId = req.user.id;
     const [rows] = await pool.execute(
-      'SELECT id, name FROM stock_clients WHERE id = ? AND user_id = ?', [id, userId]
+      'SELECT id, name, contact FROM stock_clients WHERE id = ? AND user_id = ?', [id, userId]
     );
     if (rows.length === 0) {
       return res.status(404).json({ error: "Client non trouvé" });
@@ -97,5 +97,41 @@ router.get('/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// Créer un client (si déjà existant -> renvoie l'existant)
+router.post('/', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const name = String(req.body?.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'Nom requis' });
+
+    const [existing] = await pool.execute(
+      'SELECT id, name, contact FROM stock_clients WHERE user_id = ? AND LOWER(name) = LOWER(?)',
+      [userId, name]
+    );
+    if (existing.length > 0) return res.status(200).json(existing[0]);
+
+    try {
+      const contact = req.body?.contact ? String(req.body.contact).trim() : null;
+      const [ins] = await pool.execute(
+        'INSERT INTO stock_clients (user_id, name, contact) VALUES (?, ?, ?)',
+        [userId, name, contact]
+      );
+      return res.status(201).json({ id: ins.insertId, name, contact });
+    } catch (e) {
+      const msg = String(e?.message || e?.code || '');
+      if (msg.includes('UNIQUE') || msg.toLowerCase().includes('constraint')) {
+        const [retry] = await pool.execute(
+          'SELECT id, name, contact FROM stock_clients WHERE user_id = ? AND LOWER(name) = LOWER(?)',
+          [userId, name]
+        );
+        if (retry.length > 0) return res.status(200).json(retry[0]);
+      }
+      throw e;
+    }
+  } catch (err) {
+    console.error('Erreur POST clients:', err?.code, err?.message || err);
+    res.status(500).json({ error: 'Erreur lors de la création du client', details: err?.message || String(err) });
+  }
+});
 
 module.exports = router;

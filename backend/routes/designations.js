@@ -69,4 +69,42 @@ router.get('/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// POST /  -> crée une désignation (scopée user). Si existe déjà, renvoie l'existante.
+router.post('/', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const name = String(req.body?.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'Nom requis' });
+
+    // Existe déjà ?
+    const [existing] = await pool.execute(
+      'SELECT id, name, current_stock FROM stock_designations WHERE user_id = ? AND LOWER(name) = LOWER(?)',
+      [userId, name]
+    );
+    if (existing.length > 0) return res.status(200).json(existing[0]);
+
+    // Créer
+    try {
+      const [ins] = await pool.execute(
+        'INSERT INTO stock_designations (user_id, name, current_stock) VALUES (?, ?, 0)',
+        [userId, name]
+      );
+      return res.status(201).json({ id: ins.insertId, name, current_stock: 0 });
+    } catch (e) {
+      const msg = String(e?.message || e?.code || '');
+      if (msg.includes('UNIQUE') || msg.toLowerCase().includes('constraint')) {
+        const [retry] = await pool.execute(
+          'SELECT id, name, current_stock FROM stock_designations WHERE user_id = ? AND LOWER(name) = LOWER(?)',
+          [userId, name]
+        );
+        if (retry.length > 0) return res.status(200).json(retry[0]);
+      }
+      throw e;
+    }
+  } catch (err) {
+    console.error('Erreur POST designations:', err?.code, err?.message || err);
+    res.status(500).json({ error: "Erreur lors de la création de la désignation", details: err?.message || String(err) });
+  }
+});
+
 module.exports = router;

@@ -10,39 +10,25 @@ router.get('/', authenticateToken, async (req, res) => {
     const dateJour = req.query.date || new Date().toISOString().slice(0, 10);
 
     // On récupère le flux complet pour l'utilisateur
-      const [rows] = await pool.query(
+    const [rowsRaw] = await pool.query(
       `
       SELECT
-        *,
-        CASE
-          WHEN kind = 'paiement' AND type = 'sortie' THEN montant
-          WHEN kind = 'achat' THEN -montant
-          WHEN kind = 'depense' THEN -montant
-          ELSE 0
-        END AS balance,
-        SUM(
-          CASE
-            WHEN kind = 'paiement' AND type = 'sortie' THEN montant
-            WHEN kind = 'achat' THEN -montant
-            WHEN kind = 'depense' THEN -montant
-            ELSE 0
-          END
-        ) OVER (ORDER BY created_at ASC, id ASC) AS solde
+        *
       FROM (
         -- Mouvements DU JOUR
         SELECT
           'mouvement' AS kind,
           sm.id AS id,
           sm.created_at AS created_at,
-          DATE_FORMAT(sm.\`date\`, '%Y-%m-%d') AS date,
+          strftime('%Y-%m-%d', sm.date) AS date,
           sm.type AS type,
           sm.designation_id AS designation_id,
-          COALESCE(d.name COLLATE utf8mb4_unicode_ci, 'N/A') AS designation_name,
+          COALESCE(d.name, 'N/A') AS designation_name,
           sm.quantite AS quantite,
           sm.prix AS prix,
           sm.montant AS montant,
           sm.client_id AS client_id,
-          COALESCE(c.name COLLATE utf8mb4_unicode_ci, 'N/A') AS client_name,
+          COALESCE(c.name, 'N/A') AS client_name,
           sm.stock AS stock,
           sm.stockR AS stockR,
           NULL AS mouvement_id
@@ -52,7 +38,7 @@ router.get('/', authenticateToken, async (req, res) => {
         LEFT JOIN stock_clients c
           ON c.id = sm.client_id AND c.user_id = sm.user_id
         WHERE sm.user_id = ?
-          AND DATE(sm.\`date\`) = ?
+          AND strftime('%Y-%m-%d', sm.date) = ?
 
         UNION ALL
 
@@ -61,15 +47,15 @@ router.get('/', authenticateToken, async (req, res) => {
           CASE WHEN sm.type = 'entree' THEN 'achat' ELSE 'paiement' END AS kind,
           sp.id AS id,
           sp.created_at AS created_at,
-          DATE_FORMAT(sp.\`date\`, '%Y-%m-%d') AS date,
+          strftime('%Y-%m-%d', sp.date) AS date,
           sm.type AS type,
           sm.designation_id AS designation_id,
-          COALESCE(d.name COLLATE utf8mb4_unicode_ci, 'N/A') AS designation_name,
+          COALESCE(d.name, 'N/A') AS designation_name,
           NULL AS quantite,
           NULL AS prix,
           sp.montant AS montant,
           sm.client_id AS client_id,
-          COALESCE(c.name COLLATE utf8mb4_unicode_ci, 'N/A') AS client_name,
+          COALESCE(c.name, 'N/A') AS client_name,
           NULL AS stock,
           NULL AS stockR,
           sp.mouvement_id AS mouvement_id
@@ -80,7 +66,7 @@ router.get('/', authenticateToken, async (req, res) => {
           ON d.id = sm.designation_id AND d.user_id = sm.user_id
         LEFT JOIN stock_clients c
           ON c.id = sm.client_id AND c.user_id = sm.user_id
-        WHERE DATE(sp.\`date\`) = ?
+        WHERE strftime('%Y-%m-%d', sp.date) = ?
 
         UNION ALL
 
@@ -89,25 +75,51 @@ router.get('/', authenticateToken, async (req, res) => {
           'depense' AS kind,
           sd.id AS id,
           sd.created_at AS created_at,
-          DATE_FORMAT(sd.\`date\`, '%Y-%m-%d') AS date,
+          strftime('%Y-%m-%d', sd.date) AS date,
           'depense' AS type,
           NULL AS designation_id,
-          sd.libelle COLLATE utf8mb4_unicode_ci AS designation_name,
+          sd.libelle AS designation_name,
           NULL AS quantite,
           NULL AS prix,
           sd.montant AS montant,
           NULL AS client_id,
-          COALESCE(sd.destinataire COLLATE utf8mb4_unicode_ci, 'N/A') AS client_name,
+          COALESCE(sd.destinataire, 'N/A') AS client_name,
           NULL AS stock,
           NULL AS stockR,
           NULL AS mouvement_id
         FROM stock_depenses sd
-        WHERE sd.user_id = ? AND DATE(sd.\`date\`) = ?
+        WHERE sd.user_id = ? AND strftime('%Y-%m-%d', sd.date) = ?
       ) AS t
-      ORDER BY date DESC, created_at DESC, id DESC
+      ORDER BY created_at ASC, id ASC
       `,
       [userId, dateJour, userId, dateJour, userId, dateJour]
     );
+
+    // Post-traitement: calculer balance et solde cumulés côté JS
+    let running = 0;
+    const rowsComputed = rowsRaw.map((row) => {
+      const montant = Number(row.montant) || 0;
+      let balance = 0;
+      if (row.kind === 'paiement' && String(row.type).toLowerCase() === 'sortie') {
+        balance = montant;
+      } else if (row.kind === 'achat' || row.kind === 'depense') {
+        balance = -montant;
+      } else {
+        balance = 0;
+      }
+      running += balance;
+      return { ...row, balance, solde: running };
+    });
+
+    // Ordre de sortie: comme avant (date DESC, created_at DESC, id DESC)
+    const rows = [...rowsComputed].sort((a, b) => {
+      // Compare date (YYYY-MM-DD) desc
+      if (a.date !== b.date) return a.date < b.date ? 1 : -1;
+      // created_at desc (string ISO-ish)
+      if (a.created_at !== b.created_at) return a.created_at < b.created_at ? 1 : -1;
+      // id desc
+      return (a.id || 0) < (b.id || 0) ? 1 : -1;
+    });
 
     // Construction du résumé point caisse pour la date demandée
     const achats = rows.filter(row => row.kind === "achat" && row.date === dateJour);
@@ -153,22 +165,24 @@ router.get('/search', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
     const rawQuery = (req.query.searchQuery || "").trim().slice(0, 100);
-    const isDate = /^\d{2}\/\d{2}\/\d{4}$/.test(rawQuery.trim());
-    let dateJour = null;
+    const isDate = /^\d{2}\/\d{2}\/\d{4}$/.test(rawQuery);
     let searchQuery = '%%';
     let dateQuery = '1970-01-01';
     if (isDate) {
-      const [d, m, y] = rawQuery.split("/");
-      dateJour = `${y}-${m}-${d}`;
+      const [dd, mm, yyyy] = rawQuery.split('/').map((x) => Number(x));
+      const y = yyyy;
+      const m = String(mm).padStart(2, '0');
+      const d = String(dd).padStart(2, '0');
+      const dateJour = `${y}-${m}-${d}`;
       const date = new Date(dateJour);
-      if (isNaN(date.getTime()) || date.getFullYear() != y || date.getMonth() + 1 != m || date.getDate() != d) {
-        return res.status(400).json({ error: "Format de date invalide" });
+      if (isNaN(date.getTime()) || date.getFullYear() !== y || (date.getMonth() + 1) !== Number(m) || date.getDate() !== Number(d)) {
+        return res.status(400).json({ error: 'Format de date invalide' });
       }
       dateQuery = dateJour;
     } else if (rawQuery) {
       searchQuery = `%${rawQuery}%`;
     } else {
-      return res.status(400).json({ error: "searchQuery requis" });
+      return res.status(400).json({ error: 'searchQuery requis' });
     }
 
     const queryParams = [
@@ -180,39 +194,25 @@ router.get('/search', authenticateToken, async (req, res) => {
       userId, searchQuery, searchQuery, searchQuery, dateQuery, dateQuery
     ];
 
-    const [rows] = await pool.query(
+    const [rowsRaw] = await pool.query(
       `
       SELECT
-        *,
-        CASE
-          WHEN kind = 'paiement' AND type = 'sortie' THEN montant
-          WHEN kind = 'achat' THEN -montant
-          WHEN kind = 'depense' THEN -montant
-          ELSE 0
-        END AS balance,
-        SUM(
-          CASE
-            WHEN kind = 'paiement' AND type = 'sortie' THEN montant
-            WHEN kind = 'achat' THEN -montant
-            WHEN kind = 'depense' THEN -montant
-            ELSE 0
-          END
-        ) OVER (ORDER BY created_at ASC, id ASC) AS solde
+        *
       FROM (
         -- Mouvements
         SELECT
           'mouvement' AS kind,
           sm.id AS id,
           sm.created_at AS created_at,
-          DATE_FORMAT(sm.\`date\`, '%Y-%m-%d') AS date,
+          strftime('%Y-%m-%d', sm.date) AS date,
           sm.type AS type,
           sm.designation_id AS designation_id,
-          COALESCE(d.name COLLATE utf8mb4_unicode_ci, 'N/A') AS designation_name,
+          COALESCE(d.name, 'N/A') AS designation_name,
           sm.quantite AS quantite,
           sm.prix AS prix,
           sm.montant AS montant,
           sm.client_id AS client_id,
-          COALESCE(c.name COLLATE utf8mb4_unicode_ci, 'N/A') AS client_name,
+          COALESCE(c.name, 'N/A') AS client_name,
           sm.stock AS stock,
           sm.stockR AS stockR,
           NULL AS mouvement_id
@@ -221,7 +221,7 @@ router.get('/search', authenticateToken, async (req, res) => {
         LEFT JOIN stock_clients c ON c.id = sm.client_id AND c.user_id = sm.user_id
         WHERE sm.user_id = ?
           AND (d.name LIKE ? OR c.name LIKE ? OR ? = '%%')
-          AND (DATE(sm.\`date\`) = ? OR ? = '1970-01-01')
+          AND (strftime('%Y-%m-%d', sm.date) = ? OR ? = '1970-01-01')
 
         UNION ALL
 
@@ -230,25 +230,25 @@ router.get('/search', authenticateToken, async (req, res) => {
           CASE WHEN sm.type = 'entree' THEN 'achat' ELSE 'paiement' END AS kind,
           sp.id AS id,
           sp.created_at AS created_at,
-          DATE_FORMAT(sp.\`date\`, '%Y-%m-%d') AS date,
+          strftime('%Y-%m-%d', sp.date) AS date,
           sm.type AS type,
           sm.designation_id AS designation_id,
-          COALESCE(d.name COLLATE utf8mb4_unicode_ci, 'N/A') AS designation_name,
+          COALESCE(d.name, 'N/A') AS designation_name,
           NULL AS quantite,
           NULL AS prix,
           sp.montant AS montant,
           sm.client_id AS client_id,
-          COALESCE(c.name COLLATE utf8mb4_unicode_ci, 'N/A') AS client_name,
+          COALESCE(c.name, 'N/A') AS client_name,
           NULL AS stock,
           NULL AS stockR,
           sp.mouvement_id AS mouvement_id
         FROM stock_paiements sp
-        JOIN stock_mouvements sm ON sm.id = sp.mouvement_id AND sm.user_id = sm.user_id
+        JOIN stock_mouvements sm ON sm.id = sp.mouvement_id AND sm.user_id = ?
         LEFT JOIN stock_designations d ON d.id = sm.designation_id AND d.user_id = sm.user_id
         LEFT JOIN stock_clients c ON c.id = sm.client_id AND c.user_id = sm.user_id
         WHERE sm.user_id = ?
           AND (d.name LIKE ? OR c.name LIKE ? OR ? = '%%')
-          AND (DATE(sp.\`date\`) = ? OR ? = '1970-01-01')
+          AND (strftime('%Y-%m-%d', sp.date) = ? OR ? = '1970-01-01')
 
         UNION ALL
 
@@ -257,27 +257,56 @@ router.get('/search', authenticateToken, async (req, res) => {
           'depense' AS kind,
           sd.id AS id,
           sd.created_at AS created_at,
-          DATE_FORMAT(sd.\`date\`, '%Y-%m-%d') AS date,
+          strftime('%Y-%m-%d', sd.date) AS date,
           'depense' AS type,
           NULL AS designation_id,
-          sd.libelle COLLATE utf8mb4_unicode_ci AS designation_name,
+          sd.libelle AS designation_name,
           NULL AS quantite,
           NULL AS prix,
           sd.montant AS montant,
           NULL AS client_id,
-          COALESCE(sd.destinataire COLLATE utf8mb4_unicode_ci, 'N/A') AS client_name,
+          COALESCE(sd.destinataire, 'N/A') AS client_name,
           NULL AS stock,
           NULL AS stockR,
           NULL AS mouvement_id
         FROM stock_depenses sd
         WHERE sd.user_id = ?
           AND (sd.libelle LIKE ? OR sd.destinataire LIKE ? OR ? = '%%')
-          AND (DATE(sd.\`date\`) = ? OR ? = '1970-01-01')
+          AND (strftime('%Y-%m-%d', sd.date) = ? OR ? = '1970-01-01')
       ) AS t
-      ORDER BY date DESC, created_at DESC, id DESC
+      ORDER BY created_at ASC, id ASC
       `,
-      queryParams
+      [
+        // Mouvements
+        userId, searchQuery, searchQuery, searchQuery, dateQuery, dateQuery,
+        // Paiements (JOIN condition user and WHERE user)
+        userId, userId, searchQuery, searchQuery, searchQuery, dateQuery, dateQuery,
+        // Dépenses
+        userId, searchQuery, searchQuery, searchQuery, dateQuery, dateQuery
+      ]
     );
+
+    // Post-traitement: calcul JS du solde cumulé
+    let running = 0;
+    const rowsComputed = rowsRaw.map((row) => {
+      const montant = Number(row.montant) || 0;
+      let balance = 0;
+      if (row.kind === 'paiement' && String(row.type).toLowerCase() === 'sortie') {
+        balance = montant;
+      } else if (row.kind === 'achat' || row.kind === 'depense') {
+        balance = -montant;
+      } else {
+        balance = 0;
+      }
+      running += balance;
+      return { ...row, balance, solde: running };
+    });
+
+    const rows = [...rowsComputed].sort((a, b) => {
+      if (a.date !== b.date) return a.date < b.date ? 1 : -1;
+      if (a.created_at !== b.created_at) return a.created_at < b.created_at ? 1 : -1;
+      return (a.id || 0) < (b.id || 0) ? 1 : -1;
+    });
 
     res.json({ flux: rows });
   } catch (err) {
@@ -298,11 +327,8 @@ router.put('/:id', authenticateToken, async (req, res) => {
     [date, designation_id, quantite, prix, client_id, id, userId]
   );
 
-  // 2. Recalcule tous les mouvements postérieurs (exemple pour stock)
-  await pool.query(
-    `CALL recalculer_stock_apres_mouvement(?, ?, ?)`, // écris cette procédure stockée selon ta logique
-    [designation_id, date, userId]
-  );
+  // 2. (SQLite) Recalcul du stock à implémenter côté application si nécessaire
+  // TODO: recalculer le stock si votre logique l'exige
 
   res.json({ success: true });
 });
@@ -319,8 +345,8 @@ router.delete('/:id', authenticateToken, async (req, res) => {
   // 2. Supprime le mouvement
   await pool.query(`DELETE FROM stock_mouvements WHERE id=? AND user_id=?`, [id, userId]);
 
-  // 3. Recalcule les mouvements postérieurs
-  await pool.query(`CALL recalculer_stock_apres_mouvement(?, ?, ?)`, [row[0].designation_id, row[0].date, userId]);
+  // 3. (SQLite) Recalcul du stock à implémenter côté application si nécessaire
+  // TODO: recalculer le stock si votre logique l'exige
 
   res.json({ success: true });
 });

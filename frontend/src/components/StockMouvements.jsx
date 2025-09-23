@@ -19,6 +19,8 @@ import { normalizeType } from "../utils/valuation";
 import ConfirmDeleteModal from "./StockMouvements/ConfirmDeleteModal";
 import EditMouvementModal from "./StockMouvements/EditMouvementModal";
 import ProductHistoryModal from "./StockMouvements/ProductHistoryModal";
+import ClientsListModal from "./StockMouvements/ClientsListModal";
+import ProductsListModal from "./StockMouvements/ProductsListModal";
 import ClientHistoryModal from "./StockMouvements/ClientHistoryModal";
 import PaymentModal from "./StockMouvements/PaymentModal";
 import StockTable from "./StockMouvements/StockTable";
@@ -141,6 +143,9 @@ const StockMouvements = () => {
   const [invoiceNumber, setInvoiceNumber] = useState("");
 
   const token = useMemo(() => localStorage.getItem("token"), []);
+  // New modals for listing clients and products
+  const [clientsListOpen, setClientsListOpen] = useState(false);
+  const [productsListOpen, setProductsListOpen] = useState(false);
   const hasOpenPopups = () => designationSuggestions.length > 0 || clientSuggestions.length > 0;
  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -161,6 +166,27 @@ const fetchMouvementsDuJour = async () => {
     const today = new Date().toISOString().slice(0, 10); // format YYYY-MM-DD
     const url = `/api/stockFlux?date=${today}`;
     const t = localStorage.getItem("token");
+    const res = await api.get(url, { headers: { Authorization: `Bearer ${t}` } });
+    setFeed(Array.isArray(res.data.flux) ? res.data.flux : []);
+    setError("");
+  } catch (err) {
+    setFeed([]);
+    setError(err?.response?.data?.error || "Erreur de chargement");
+  } finally {
+    setLoading(false);
+  }
+};
+
+// Recherche générique (texte ou date JJ/MM/AAAA) — fallback au jour courant si vide
+const fetchFeed = async (value) => {
+  const q = String(value ?? "").trim();
+  if (!q) return fetchMouvementsDuJour();
+  setLoading(true);
+  try {
+    const t = localStorage.getItem("token");
+    const params = new URLSearchParams();
+    params.append("searchQuery", q);
+    const url = `/api/stockFlux/search?${params.toString()}`;
     const res = await api.get(url, { headers: { Authorization: `Bearer ${t}` } });
     setFeed(Array.isArray(res.data.flux) ? res.data.flux : []);
     setError("");
@@ -376,15 +402,60 @@ const handleSubmit = async (e) => {
   const hasClient = (formData.client_name && formData.client_name.trim() !== "") || formData.client_id != null;
   if (!hasClient) { setFormError("Client obligatoire."); setFormLoading(false); submittingRef.current = false; return; }
 
+  // Tentative de résolution des IDs côté client si non fournis mais nom saisi
+  let resolvedDesignationId = formData.designation_id ?? null;
+  let resolvedClientId = formData.client_id ?? null;
+  const desName = (formData.designation_name || "").trim();
+  const cliName = (formData.client_name || "").trim();
+
+  try {
+    const t = localStorage.getItem("token");
+    if (!resolvedDesignationId && desName) {
+      const resDes = await api.get(`/api/designations/search?q=${encodeURIComponent(desName)}`, {
+        headers: { Authorization: `Bearer ${t}` },
+      });
+      const list = Array.isArray(resDes.data) ? resDes.data : [];
+      const exact = list.find(d => String(d.name || "").toLowerCase() === desName.toLowerCase());
+      if (exact) resolvedDesignationId = exact.id;
+    }
+    if (!resolvedClientId && cliName) {
+      const resCli = await api.get(`/api/clients/search?q=${encodeURIComponent(cliName)}`, {
+        headers: { Authorization: `Bearer ${t}` },
+      });
+      const list = Array.isArray(resCli.data) ? resCli.data : [];
+      const exact = list.find(c => String(c.name || "").toLowerCase() === cliName.toLowerCase());
+      if (exact) resolvedClientId = exact.id;
+    }
+    // Si toujours pas résolus, créer côté serveur pour obtenir les IDs
+    if (!resolvedDesignationId && desName) {
+      const createdDes = await api.post(
+        '/api/designations',
+        { name: desName },
+        { headers: { Authorization: `Bearer ${t}`, 'Content-Type': 'application/json' } }
+      );
+      if (createdDes?.data?.id) resolvedDesignationId = createdDes.data.id;
+    }
+    if (!resolvedClientId && cliName) {
+      const createdCli = await api.post(
+        '/api/clients',
+        { name: cliName },
+        { headers: { Authorization: `Bearer ${t}`, 'Content-Type': 'application/json' } }
+      );
+      if (createdCli?.data?.id) resolvedClientId = createdCli.data.id;
+    }
+  } catch (_) {
+    // En cas d'échec réseau, on laisse le backend gérer le find-or-create
+  }
+
   const payload = {
     date: isoDate,
     type: formData.type,
-    designation_id: formData.designation_id ?? null,
-    designation_name: formData.designation_name?.trim() || undefined,
+    designation_id: resolvedDesignationId,
+    designation_name: desName || undefined,
     quantite: parseInt(formData.quantite) || 0,
     prix: parseInt(formData.prix) || 0,
-    client_id: formData.client_id ?? null,
-    client_name: formData.client_name?.trim() || undefined,
+    client_id: resolvedClientId,
+    client_name: cliName || undefined,
   };
   Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
 
@@ -409,7 +480,9 @@ const handleSubmit = async (e) => {
     await fetchMouvementsDuJour(); // <-- Rafraîchis bien la liste !
     if (dateRef.current) { dateRef.current.focus(); placeCaretAtEnd(dateRef.current); }
   } catch (err) {
-    setFormError(err?.response?.data?.error || "Erreur lors de l'ajout");
+    const backendErr = err?.response?.data;
+    const msg = backendErr?.error || backendErr?.message || backendErr?.details || "Erreur lors de l'ajout";
+    setFormError(msg);
     if (err?.response?.status === 401 || err?.response?.status === 403) { localStorage.removeItem("token"); navigate("/login"); }
   } finally {
     setFormLoading(false); submittingRef.current = false;
@@ -788,6 +861,23 @@ const saveEdit = async (e) => {
     Enregistrer une dépense
   </button>
 
+  {/* New buttons */}
+  <button
+    className="bg-white border px-4 py-2 rounded hover:bg-gray-50"
+    onClick={() => setClientsListOpen(true)}
+    type="button"
+  >
+    Clients
+  </button>
+
+  <button
+    className="bg-white border px-4 py-2 rounded hover:bg-gray-50"
+    onClick={() => setProductsListOpen(true)}
+    type="button"
+  >
+    Produits
+  </button>
+
   <button
     className="bg-blue-600 text-white px-4 py-2 rounded flex items-center gap-2"
     onClick={() => setOpenHistorique(true)}
@@ -813,6 +903,10 @@ const saveEdit = async (e) => {
         total={selectedTotal}
         amountInWords={amountInWords}
       />
+
+      {/* New list modals */}
+      <ClientsListModal open={clientsListOpen} onClose={() => setClientsListOpen(false)} />
+      <ProductsListModal open={productsListOpen} onClose={() => setProductsListOpen(false)} />
 
       <DepenseModal
         open={depenseOpen}

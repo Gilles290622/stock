@@ -17,6 +17,15 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Gestion propre des erreurs de parsing JSON (renvoie du JSON au lieu de HTML)
+app.use((err, req, res, next) => {
+  if (err instanceof SyntaxError && 'body' in err) {
+    console.error('Invalid JSON payload:', err.message);
+    return res.status(400).json({ message: 'Requête JSON invalide' });
+  }
+  next(err);
+});
+
 // ROUTES MÉTIER
 app.use('/api/stockDepenses', require('./routes/stockDepenses'));
 app.use('/api/stockPaiements', stockPaiementsRouter);

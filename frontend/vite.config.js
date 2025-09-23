@@ -12,12 +12,13 @@ export default defineConfig(({ mode }) => ({
     allowedHosts: ['stock', 'fichiers', 'localhost'],
     proxy: {
       '/api': {
-        target: 'http://localhost:3001',
+        // Use IPv4 to avoid ::1 (IPv6) resolution issues on some Windows setups
+        target: 'http://127.0.0.1:3001',
         changeOrigin: true,
         secure: false,
       },
       '/uploads': {
-        target: 'http://localhost:3001',
+        target: 'http://127.0.0.1:3001',
         changeOrigin: true,
         secure: false,
       }
