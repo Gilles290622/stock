@@ -1,8 +1,10 @@
 import axios from "axios";
 
-const api = axios.create({
-  // baseURL non nécessaire si on utilise des chemins relatifs + proxy Vite
-});
+// Permet d'overrider la base API en production (ex: autre domaine) via VITE_API_BASE
+// Laisser vide pour utiliser des chemins relatifs (utile en dev avec proxy et en prod même domaine)
+const baseURL = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_BASE) ? import.meta.env.VITE_API_BASE : '';
+
+const api = axios.create({ baseURL });
 
 // Intercepteur de requête: injecte automatiquement le token
 api.interceptors.request.use((config) => {

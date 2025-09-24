@@ -143,6 +143,36 @@ const StockMouvements = () => {
   const [invoiceNumber, setInvoiceNumber] = useState("");
 
   const token = useMemo(() => localStorage.getItem("token"), []);
+  const currentUserId = useMemo(() => {
+    try {
+      const t = localStorage.getItem('token');
+      if (!t) return null;
+      const payload = JSON.parse(atob(t.split('.')[1]));
+      return payload?.id || null;
+    } catch { return null; }
+  }, []);
+  const isUser7 = currentUserId === 7;
+  const [syncLoading, setSyncLoading] = useState(false);
+  const [syncMsg, setSyncMsg] = useState("");
+
+  // Compteurs globaux (depuis la base)
+  const [clientsTotal, setClientsTotal] = useState(null);
+  const [productsTotal, setProductsTotal] = useState(null);
+
+  const fetchCounts = async () => {
+    try {
+      const [cCnt, pCnt] = await Promise.all([
+        api.get('/api/clients/count'),
+        api.get('/api/designations/count')
+      ]);
+      setClientsTotal(Number(cCnt?.data?.count ?? 0));
+      setProductsTotal(Number(pCnt?.data?.count ?? 0));
+    } catch (_) {
+      // En cas d'erreur, laisser null pour ne rien afficher
+      setClientsTotal(null);
+      setProductsTotal(null);
+    }
+  };
   // New modals for listing clients and products
   const [clientsListOpen, setClientsListOpen] = useState(false);
   const [productsListOpen, setProductsListOpen] = useState(false);
@@ -202,6 +232,7 @@ const fetchFeed = async (value) => {
 
   useEffect(() => {
   fetchMouvementsDuJour();
+    fetchCounts();
 }, []);
 
   // Dériver la liste des mouvements (utile pour options, modales, etc.)
@@ -838,6 +869,39 @@ const saveEdit = async (e) => {
     {pointJourLoading ? "Chargement..." : "Journal caisse"}
   </button>
 
+  {isUser7 && (
+    <button
+      className="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 disabled:opacity-50"
+      onClick={async () => {
+        if (syncLoading) return;
+        setSyncLoading(true); setSyncMsg("");
+        try {
+          // Lancer d'abord la sync des clients puis des produits
+          await api.post('/api/sync/clients', { annex: 1, user: 7 });
+          await api.post('/api/sync/produits', { annex: 1, user: 7 });
+          setSyncMsg("Mise à jour effectuée.");
+          // Rafraîchir la liste du jour (pour options locales) et si une modal est ouverte, relancer leur chargement
+          await fetchMouvementsDuJour();
+              await fetchCounts();
+          if (clientsListOpen) {
+            try { await api.get('/api/clients'); } catch {}
+          }
+          if (productsListOpen) {
+            try { await api.get('/api/designations'); } catch {}
+          }
+        } catch (e) {
+          setSyncMsg(e?.response?.data?.error || e?.message || 'Erreur de synchronisation');
+        } finally {
+          setSyncLoading(false);
+        }
+      }}
+      disabled={syncLoading}
+      type="button"
+    >
+      {syncLoading ? 'Mise à jour…' : 'Mettre à jour (source)'}
+    </button>
+  )}
+
 
 <button
   className="bg-white border px-4 py-2 rounded flex items-center gap-2 hover:bg-gray-50"
@@ -867,7 +931,7 @@ const saveEdit = async (e) => {
     onClick={() => setClientsListOpen(true)}
     type="button"
   >
-    Clients
+    Clients{clientsTotal != null ? ` (${clientsTotal})` : ''}
   </button>
 
   <button
@@ -875,7 +939,7 @@ const saveEdit = async (e) => {
     onClick={() => setProductsListOpen(true)}
     type="button"
   >
-    Produits
+    Produits{productsTotal != null ? ` (${productsTotal})` : ''}
   </button>
 
   <button
@@ -907,6 +971,7 @@ const saveEdit = async (e) => {
       {/* New list modals */}
       <ClientsListModal open={clientsListOpen} onClose={() => setClientsListOpen(false)} />
       <ProductsListModal open={productsListOpen} onClose={() => setProductsListOpen(false)} />
+      {syncMsg && <div className="text-sm text-gray-600 mt-2">{syncMsg}</div>}
 
       <DepenseModal
         open={depenseOpen}

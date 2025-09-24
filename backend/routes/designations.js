@@ -5,6 +5,61 @@ const authenticateToken = require('../middleware/auth');
 
 // IMPORTANT: /search AVANT /:id
 
+// Liste complète (option q) sans limite
+router.get('/all', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const q = (req.query.q || '').trim();
+    if (q) {
+      const like = `%${q}%`;
+      const [rows] = await pool.execute(
+        `SELECT id, name, current_stock
+           FROM stock_designations
+          WHERE user_id = ? AND LOWER(name) LIKE LOWER(?)
+          ORDER BY name`,
+        [userId, like]
+      );
+      return res.json(rows);
+    } else {
+      const [rows] = await pool.execute(
+        'SELECT id, name, current_stock FROM stock_designations WHERE user_id = ? ORDER BY name',
+        [userId]
+      );
+      return res.json(rows);
+    }
+  } catch (err) {
+    console.error('Erreur GET designations/all:', err?.code, err?.message || err);
+    res.status(500).json({ error: "Erreur lors de la récupération de toutes les désignations" });
+  }
+});
+
+// Compte total (option q)
+router.get('/count', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const q = (req.query.q || '').trim();
+    if (q) {
+      const like = `%${q}%`;
+      const [rows] = await pool.execute(
+        'SELECT COUNT(*) AS count FROM stock_designations WHERE user_id = ? AND LOWER(name) LIKE LOWER(?)',
+        [userId, like]
+      );
+      const count = rows && rows[0] ? (rows[0].count || rows[0].COUNT || rows[0]['COUNT(*)'] || 0) : 0;
+      return res.json({ count });
+    } else {
+      const [rows] = await pool.execute(
+        'SELECT COUNT(*) AS count FROM stock_designations WHERE user_id = ?',
+        [userId]
+      );
+      const count = rows && rows[0] ? (rows[0].count || rows[0].COUNT || rows[0]['COUNT(*)'] || 0) : 0;
+      return res.json({ count });
+    }
+  } catch (err) {
+    console.error('Erreur GET designations/count:', err?.code, err?.message || err);
+    res.status(500).json({ error: "Erreur lors du comptage des désignations" });
+  }
+});
+
 // GET /search?q=...  -> recherche limitée aux désignations de l'utilisateur connecté
 router.get('/search', authenticateToken, async (req, res) => {
   try {

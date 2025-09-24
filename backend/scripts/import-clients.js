@@ -2,7 +2,7 @@
 /**
  * Import des clients depuis backend/sql/clientele.sql dans stock_clients
  * - Map: client -> name, client_contact -> contact
- * - Déduplication insensible à la casse par (user_id, name)
+ * - Déduplication sensible à la casse: on considère deux noms différents si leur casse diffère
  *
  * Usage:
  *   node scripts/import-clients.js --user 6 [--file backend/sql/clientele.sql] [--annex 1]
@@ -153,53 +153,100 @@ async function main() {
   const body = extractInsertBody(sqlText);
 
   const entries = [];
-  const seen = new Set();
+  const byKey = new Map(); // key -> { name, contact, address, phone, email }
   let total = 0;
   for (const t of iterateTuples(body)) {
     total++;
     const f = splitTopLevel(t);
     // colonnes clientele: client_num, client, client_nom, client_c, client_prenom, client_contact, ...
     const name = f[1] != null ? String(f[1]).trim() : '';
-    const contact = f[5] != null ? String(f[5]).trim() : null;
+  let contact = f[5] != null ? String(f[5]).trim() : null;
+  let address = f[7] != null ? String(f[7]).trim() : null; // client_home
     const annexVal = f[8] != null ? String(f[8]).trim() : null; // 'annex' dans dump clientele
+  let phone = f[9] != null ? String(f[9]).trim() : null; // telephone
+  let email = f[10] != null ? String(f[10]).trim() : null; // email
     if (!name) continue;
     if (annex != null && annex !== undefined) {
       if (annexVal !== String(annex)) continue; // filtrage par annexe
     }
-    const key = name.toLocaleLowerCase();
-    if (seen.has(key)) continue; // dédoublonnage par nom
-    seen.add(key);
-    entries.push({ name, contact });
+    // normaliser contact: ignorer valeurs vides ou '0'
+    const normStr = (s) => {
+      if (s == null) return null;
+      const t = String(s).replace(/\s+/g, ' ').trim();
+      return t && t !== '0' ? t : null;
+    };
+    contact = normStr(contact);
+    address = normStr(address);
+    phone = normStr(phone);
+    email = normStr(email);
+  const key = name; // clé sensible à la casse
+    const prev = byKey.get(key);
+    if (!prev) {
+      byKey.set(key, { name, contact: contact || null, address: address || null, phone: phone || null, email: email || null });
+    } else {
+      // fusionner: préférer un contact non-null
+      if (!prev.contact && contact) prev.contact = contact;
+      if (!prev.address && address) prev.address = address;
+      if (!prev.phone && phone) prev.phone = phone;
+      if (!prev.email && email) prev.email = email;
+    }
   }
 
   console.log(`Tuples lus: ${total}`);
-  console.log(`Clients uniques par nom: ${entries.length}`);
+  const merged = Array.from(byKey.values());
+  console.log(`Clients uniques par nom: ${merged.length}`);
 
   const conn = await pool.getConnection();
-  let inserted = 0, skipped = 0, errors = 0;
+  let inserted = 0, skipped = 0, updated = 0, errors = 0;
   try {
     await conn.beginTransaction();
-    for (const { name, contact } of entries) {
+    for (const { name, contact, address, phone, email } of merged) {
       try {
-        const [exists] = await conn.execute(
-          'SELECT id FROM stock_clients WHERE user_id = ? AND LOWER(name) = LOWER(?)',
-          [user, name]
-        );
-        if (exists.length > 0) { skipped++; continue; }
+        const [exists] = await conn.execute('SELECT id, contact, address, phone, email FROM stock_clients WHERE user_id = ? AND name = ?', [user, name]);
+        if (exists.length > 0) {
+          // mettre à jour le contact si inexistant et nouveau contact disponible
+          const row = exists[0];
+          const toSet = {};
+          const has = (v) => v != null && String(v).trim() !== '' && String(v).trim() !== '0';
+          if (!has(row.contact) && has(contact)) toSet.contact = contact;
+          if (!has(row.address) && has(address)) toSet.address = address;
+          if (!has(row.phone) && has(phone)) toSet.phone = phone;
+          if (!has(row.email) && has(email)) toSet.email = email;
+          if (Object.keys(toSet).length > 0) {
+            const fields = Object.keys(toSet).map((k) => `${k} = ?`).join(', ');
+            const values = Object.values(toSet);
+            await conn.execute(`UPDATE stock_clients SET ${fields} WHERE id = ?`, [...values, row.id]);
+            updated++;
+          } else {
+            skipped++;
+          }
+          continue;
+        }
 
-        await conn.execute(
-          'INSERT INTO stock_clients (user_id, name, contact) VALUES (?, ?, ?)',
-          [user, name, contact || null]
-        );
+        await conn.execute('INSERT INTO stock_clients (user_id, name, contact, address, phone, email) VALUES (?, ?, ?, ?, ?, ?)', [user, name, contact || null, address || null, phone || null, email || null]);
         inserted++;
       } catch (e) {
         const msg = String(e && (e.message || e.code) || e);
         if (msg.toLowerCase().includes('unique') || msg.toLowerCase().includes('constraint')) {
-          const [exists2] = await conn.execute(
-            'SELECT id FROM stock_clients WHERE user_id = ? AND LOWER(name) = LOWER(?)',
-            [user, name]
-          );
-          if (exists2.length > 0) { skipped++; continue; }
+          const [exists2] = await conn.execute('SELECT id, contact, address, phone, email FROM stock_clients WHERE user_id = ? AND name = ?', [user, name]);
+          if (exists2.length > 0) {
+            const row2 = exists2[0];
+            const toSet2 = {};
+            const has2 = (v) => v != null && String(v).trim() !== '' && String(v).trim() !== '0';
+            if (!has2(row2.contact) && has2(contact)) toSet2.contact = contact;
+            if (!has2(row2.address) && has2(address)) toSet2.address = address;
+            if (!has2(row2.phone) && has2(phone)) toSet2.phone = phone;
+            if (!has2(row2.email) && has2(email)) toSet2.email = email;
+            if (Object.keys(toSet2).length > 0) {
+              const fields2 = Object.keys(toSet2).map((k) => `${k} = ?`).join(', ');
+              const values2 = Object.values(toSet2);
+              await conn.execute(`UPDATE stock_clients SET ${fields2} WHERE id = ?`, [...values2, row2.id]);
+              updated++;
+            } else {
+              skipped++;
+            }
+            continue;
+          }
         }
         errors++;
         console.warn('Erreur insertion client', name, ':', msg);
@@ -216,6 +263,7 @@ async function main() {
   console.log('Import clients terminé:');
   console.log('- Insérés:', inserted);
   console.log('- Déjà existants:', skipped);
+  console.log('- Mis à jour (contact):', updated);
   console.log('- Erreurs:', errors);
 }
 

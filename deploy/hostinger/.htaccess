@@ -1,0 +1,15 @@
+RewriteEngine On
+
+# Redirect root to /stock/
+RewriteCond %{REQUEST_URI} ^/$
+RewriteRule ^$ /stock/ [R=302,L]
+
+# Serve existing files and directories as-is
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule . - [L]
+
+# SPA fallback for any /stock/* route
+RewriteCond %{REQUEST_URI} ^/stock
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteRule ^stock/.* /stock/index.html [L]

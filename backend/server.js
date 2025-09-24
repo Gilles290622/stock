@@ -11,6 +11,7 @@ const authRoutes = require("./routes/auth");
 const designationsRoutes = require("./routes/designations");
 const clientsRoutes = require("./routes/clients");
 const stockPaiementsRouter = require('./routes/stockPaiements');
+const syncRoutes = require('./routes/sync');
 
 const app = express();
 
@@ -34,6 +35,7 @@ app.use("/api", authRoutes);
 app.use("/api/stockMouvements", stockMouvementsRoutes);
 app.use("/api/designations", designationsRoutes);
 app.use("/api/clients", clientsRoutes);
+app.use('/api/sync', syncRoutes);
 // leave update-profile mounted if you have a dedicated route file
 app.use('/api/update-profile', require('./routes/update-profile'));
 
@@ -98,8 +100,30 @@ app.post('/api/upload-logo', authenticateToken, (req, res, next) => {
 // Note: remove any duplicate definition of /api/update-profile below if you mount the route file above.
 // If you don't have routes/update-profile.js, re-add a secured handler here using authenticateToken.
 
+// Serve built frontend in production under /stock (Vite base path)
+let FRONTEND_AVAILABLE = false;
+try {
+  const FRONTEND_DIST = path.join(__dirname, '..', 'frontend', 'dist');
+  if (require('fs').existsSync(FRONTEND_DIST)) {
+    FRONTEND_AVAILABLE = true;
+    app.use('/stock', express.static(FRONTEND_DIST, { index: false }));
+    // SPA fallback for client-side routes (Express 5: use RegExp to match all under /stock)
+    app.get('/stock', (req, res) => {
+      res.sendFile(path.join(FRONTEND_DIST, 'index.html'));
+    });
+    app.get(/^\/stock\/.+$/, (req, res) => {
+      res.sendFile(path.join(FRONTEND_DIST, 'index.html'));
+    });
+  }
+} catch (e) {
+  console.warn('Static frontend mount skipped:', e?.message || e);
+}
+
 // healthcheck
-app.get("/", (req, res) => res.send("ok backend running"));
+app.get("/", (req, res) => {
+  if (FRONTEND_AVAILABLE) return res.redirect(302, '/stock');
+  return res.send("ok backend running");
+});
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, '0.0.0.0', () => {
