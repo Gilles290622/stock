@@ -2,7 +2,8 @@ const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
 const path = require("path");
-require("dotenv").config();
+// Load .env from backend directory regardless of current working directory
+require("dotenv").config({ path: path.join(__dirname, ".env") });
 
 const authenticateToken = require('./middleware/auth');
 
@@ -12,11 +13,19 @@ const designationsRoutes = require("./routes/designations");
 const clientsRoutes = require("./routes/clients");
 const stockPaiementsRouter = require('./routes/stockPaiements');
 const syncRoutes = require('./routes/sync');
+const remotePool = require('./config/remoteDb');
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
+
+// Diagnose remote replication availability
+if (remotePool) {
+  console.log('[replication] Remote replication ENABLED ->', process.env.REMOTE_DB_HOST, process.env.REMOTE_DB_NAME);
+} else {
+  console.log('[replication] Remote replication DISABLED (set REMOTE_DB_HOST, REMOTE_DB_USER, REMOTE_DB_PASSWORD, REMOTE_DB_NAME in .env)');
+}
 
 // Gestion propre des erreurs de parsing JSON (renvoie du JSON au lieu de HTML)
 app.use((err, req, res, next) => {
@@ -38,6 +47,7 @@ app.use("/api/clients", clientsRoutes);
 app.use('/api/sync', syncRoutes);
 // leave update-profile mounted if you have a dedicated route file
 app.use('/api/update-profile', require('./routes/update-profile'));
+app.use('/api/entreprise', require('./routes/entreprise'));
 
 // === UPLOAD AVATARS (sécurisé) ===
 // Dossier d'upload (crée si inexistant)
@@ -100,32 +110,116 @@ app.post('/api/upload-logo', authenticateToken, (req, res, next) => {
 // Note: remove any duplicate definition of /api/update-profile below if you mount the route file above.
 // If you don't have routes/update-profile.js, re-add a secured handler here using authenticateToken.
 
-// Serve built frontend in production under /stock (Vite base path)
+// Serve frontend à la racine (/) en prod ou via Vite middleware en dev.
 let FRONTEND_AVAILABLE = false;
+const FRONTEND_DIST = path.join(__dirname, '..', 'frontend', 'dist');
 try {
-  const FRONTEND_DIST = path.join(__dirname, '..', 'frontend', 'dist');
   if (require('fs').existsSync(FRONTEND_DIST)) {
     FRONTEND_AVAILABLE = true;
-    app.use('/stock', express.static(FRONTEND_DIST, { index: false }));
-    // SPA fallback for client-side routes (Express 5: use RegExp to match all under /stock)
-    app.get('/stock', (req, res) => {
+    app.use('/', express.static(FRONTEND_DIST, { index: false }));
+    app.get('/', (req, res) => {
       res.sendFile(path.join(FRONTEND_DIST, 'index.html'));
     });
-    app.get(/^\/stock\/.+$/, (req, res) => {
+    // SPA fallback
+    app.get(/^\/(?!api|uploads)(.*)$/, (req, res) => {
       res.sendFile(path.join(FRONTEND_DIST, 'index.html'));
     });
+    console.log('[frontend] Build statique servi à la racine /');
   }
 } catch (e) {
-  console.warn('Static frontend mount skipped:', e?.message || e);
+  console.warn('[frontend] Static mount error:', e?.message || e);
 }
 
-// healthcheck
-app.get("/", (req, res) => {
-  if (FRONTEND_AVAILABLE) return res.redirect(302, '/stock');
-  return res.send("ok backend running");
+// Vite middleware (développement) : monte le front directement sur le même port (80 / 3001)
+if (!FRONTEND_AVAILABLE && process.env.NODE_ENV !== 'production') {
+  (async () => {
+    try {
+      const { createServer } = require('vite');
+      const vite = await createServer({
+        root: path.join(__dirname, '..', 'frontend'),
+        base: '/',
+        server: { middlewareMode: true },
+        appType: 'spa'
+      });
+      // Inject Vite middlewares (handles HMR, assets, etc.)
+      app.use(vite.middlewares);
+      const fsPromises = require('fs').promises;
+      const INDEX_PATH = path.join(__dirname, '..', 'frontend', 'index.html');
+      async function serveIndex(req, res, next) {
+        try {
+          let html = await fsPromises.readFile(INDEX_PATH, 'utf-8');
+            // transformIndexHtml applique HMR client + réécrit base
+      html = await vite.transformIndexHtml('/', html);
+          res.status(200).set({ 'Content-Type': 'text/html' }).end(html);
+        } catch (e) { next(e); }
+      }
+  app.get('/', serveIndex);
+  app.get(/^\/(?!api|uploads)(.*)$/, serveIndex);
+  console.log('[frontend] Vite dev middleware actif sur / (HMR)');
+    } catch (e) {
+      console.warn('[frontend] Vite middleware non initialisé:', e?.message || e);
+    }
+  })();
+}
+
+// Healthcheck (JSON) moved to /api/health to avoid overriding SPA root route
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', frontend: FRONTEND_AVAILABLE, timestamp: Date.now() });
 });
 
-const PORT = process.env.PORT || 3001;
+// Version endpoint (for frontend refresh logic) – never swallow silently
+let __backendVersion = '0.0.0';
+try {
+  const backendPkg = require('./package.json');
+  if (backendPkg && backendPkg.version) __backendVersion = backendPkg.version;
+} catch (e) {
+  console.warn('[version] Impossible de charger package.json:', e?.message || e);
+}
+app.get('/api/version', (req, res) => {
+  res.json({ version: __backendVersion, buildTime: process.env.BUILD_TIME || null });
+});
+
+// Global diagnostics (debug des crash silencieux)
+process.on('uncaughtException', (err) => {
+  console.error('[fatal] uncaughtException:', err && (err.stack || err.message) || err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[fatal] unhandledRejection:', reason && (reason.stack || reason.message) || reason);
+});
+
+  // --- Admin trigger migrations endpoint ---
+  try {
+    const { runMigrations } = require('./scripts/migrationsRunner');
+    app.post('/api/admin/run-migrations', authenticateToken, async (req, res) => {
+      try {
+        const db = require('./config/db');
+        // Vérifie d'abord via ID autorisé pour fallback rapide
+        const allowedIds = (process.env.ADMIN_IDS || '1,7').split(',').map(s=>s.trim());
+        let isAdmin = allowedIds.includes(String(req.user.id));
+        if (!isAdmin) {
+          // Vérifie rôle dans profiles
+          try {
+            const [rows] = await db.execute('SELECT role FROM profiles WHERE user_id = ? LIMIT 1', [req.user.id]);
+            if (rows.length && rows[0].role === 'admin') isAdmin = true;
+          } catch {}
+        }
+        if (!isAdmin) {
+          return res.status(403).json({ error: 'Accès refusé' });
+        }
+        const result = await runMigrations();
+        return res.json(result);
+      } catch (e) {
+        return res.status(500).json({ error: e.message || 'Erreur' });
+      }
+    });
+  } catch (e) {
+    console.warn('[admin-migrations] endpoint not loaded:', e?.message || e);
+  }
+
+let PORT = parseInt(process.env.PORT, 10) || 3001;
+if (PORT === 80) {
+  console.log('[startup] Tentative d\'écoute sur le port 80');
+}
 app.listen(PORT, '0.0.0.0', () => {
   console.log("API démarrée sur le port", PORT);
 });

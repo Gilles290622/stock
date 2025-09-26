@@ -21,15 +21,24 @@ CREATE TABLE IF NOT EXISTS profiles (
   CONSTRAINT fk_profiles_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Categories de produits
+CREATE TABLE IF NOT EXISTS stock_categories (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(190) NOT NULL UNIQUE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS stock_designations (
   id INT AUTO_INCREMENT PRIMARY KEY,
   user_id INT NOT NULL,
   name VARCHAR(190) NOT NULL,
   current_stock INT NOT NULL DEFAULT 0,
+  categorie INT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uk_designation_user_name (user_id, name),
   KEY idx_designations_user (user_id),
+  KEY idx_designations_categorie (categorie),
   CONSTRAINT fk_designations_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  ,CONSTRAINT fk_designations_categorie FOREIGN KEY (categorie) REFERENCES stock_categories(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS stock_clients (

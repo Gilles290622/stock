@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/db');
 const authenticateToken = require('../middleware/auth');
+const remotePool = require('../config/remoteDb');
+const { logReplicationError } = require('../utils/replicationLog');
 
 // Normalise le type en 'entree' ou 'sortie' (tolère variantes)
 function normalizeType(raw) {
@@ -281,6 +283,80 @@ router.post('/', authenticateToken, async (req, res) => {
 
     await conn.commit();
     const newId = result?.insertId ?? result?.lastID ?? result?.lastInsertRowid ?? result?.lastInsertId;
+
+    // Remote replication (optional synchronous if waitRemote=1 query param)
+    let remoteInfo = null;
+    if (remotePool) {
+      const waitRemote = req.query.waitRemote === '1';
+      const replicate = async () => {
+        let rconn;
+        try {
+          rconn = await remotePool.getConnection();
+          await rconn.beginTransaction();
+          const [localUserRows] = await pool.query('SELECT id, full_name, email, password FROM users WHERE id = ?', [userId]);
+            const u = localUserRows && localUserRows[0];
+            if (u) {
+              const [ruById] = await rconn.execute('SELECT id FROM users WHERE id = ?', [u.id]);
+              if (ruById.length === 0) {
+                const [ruByEmail] = await rconn.execute('SELECT id FROM users WHERE email = ?', [u.email]);
+                if (ruByEmail.length === 0) {
+                  await rconn.execute(
+                    'INSERT INTO users (id, full_name, email, password) VALUES (?, ?, ?, ?)',
+                    [u.id, u.full_name || '', u.email || `user${u.id}@local`, u.password || '']
+                  );
+                }
+              }
+            }
+          if (cliId) {
+            const [lc] = await pool.query('SELECT id, name FROM stock_clients WHERE id = ? AND user_id = ?', [cliId, userId]);
+            const lcRow = lc && lc[0];
+            if (lcRow) {
+              await rconn.execute(
+                `INSERT INTO stock_clients (id, user_id, name)
+                 VALUES (?, ?, ?)
+                 ON DUPLICATE KEY UPDATE name = VALUES(name)`,
+                [lcRow.id, userId, lcRow.name]
+              );
+            }
+          }
+          if (des?.id) {
+            const [ld] = await pool.query('SELECT id, name, current_stock FROM stock_designations WHERE id = ? AND user_id = ?', [des.id, userId]);
+            const ldRow = ld && ld[0];
+            if (ldRow) {
+              await rconn.execute(
+                `INSERT INTO stock_designations (id, user_id, name, current_stock)
+                 VALUES (?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE name = VALUES(name), current_stock = VALUES(current_stock)`,
+                [ldRow.id, userId, ldRow.name, Number(ldRow.current_stock || 0)]
+              );
+            }
+          }
+          await rconn.execute(
+            `INSERT INTO stock_mouvements (id, user_id, date, type, designation_id, quantite, prix, client_id, stock, stockR)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE
+               date=VALUES(date), type=VALUES(type), designation_id=VALUES(designation_id),
+               quantite=VALUES(quantite), prix=VALUES(prix), client_id=VALUES(client_id),
+               stock=VALUES(stock), stockR=VALUES(stockR)`,
+            [newId, userId, date, typeNorm, des.id, qty, unitPrice, cliId, stock, stockR]
+          );
+          await rconn.commit();
+          remoteInfo = { success: true };
+        } catch (e) {
+          if (rconn) try { await rconn.rollback(); } catch {}
+          logReplicationError('mouvement.insert', e, { mouvement_id: newId, user_id: userId });
+          remoteInfo = { success: false, error: e?.message || String(e) };
+        } finally {
+          if (rconn) rconn.release();
+        }
+      };
+      if (waitRemote) {
+        await replicate();
+      } else {
+        replicate(); // fire and forget
+      }
+    }
+
     res.status(201).json({
       id: newId,
       type: typeNorm,
@@ -289,6 +365,7 @@ router.post('/', authenticateToken, async (req, res) => {
       stock,
       stockR,
       current_stock: newCurrent,
+      remote: remoteInfo,
     });
   } catch (err) {
     if (conn) await conn.rollback();
@@ -339,9 +416,16 @@ router.patch('/:id', authenticateToken, async (req, res) => {
     const prix = req.body.prix;
 
     // Validations légères (optionnelles)
-    let newDate = date != null ? String(date) : undefined;
-    if (newDate != null && !/^\d{4}-\d{2}-\d{2}$/.test(newDate)) {
-      return res.status(400).json({ error: 'Format de date invalide (YYYY-MM-DD)' });
+    let newDate = date != null ? String(date).trim() : undefined;
+    if (newDate != null) {
+      // Accepte JJ/MM/AAAA et convertit en ISO
+      if (/^\d{2}\/\d{2}\/\d{4}$/.test(newDate)) {
+        const [d, m, y] = newDate.split('/');
+        newDate = `${y}-${m}-${d}`;
+      }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(newDate)) {
+        return res.status(400).json({ error: 'Format de date invalide (YYYY-MM-DD ou JJ/MM/AAAA)' });
+      }
     }
     let newType = type != null ? normalizeType(type) : undefined;
     if (type != null && !newType) {
@@ -491,6 +575,93 @@ router.patch('/:id', authenticateToken, async (req, res) => {
     }
 
     await conn.commit();
+
+    // Best-effort remote upsert replication after edit
+    if (remotePool) {
+      (async () => {
+        let rconn;
+        try {
+          rconn = await remotePool.getConnection();
+          await rconn.beginTransaction();
+
+          // Ensure user exists remotely
+          const [ruById] = await rconn.execute('SELECT id FROM users WHERE id = ?', [userId]);
+          if (ruById.length === 0) {
+            const [localUserRows] = await pool.query('SELECT id, full_name, email, password FROM users WHERE id = ?', [userId]);
+            const u = localUserRows && localUserRows[0];
+            if (u) {
+              const [ruByEmail] = await rconn.execute('SELECT id FROM users WHERE email = ?', [u.email]);
+              if (ruByEmail.length === 0) {
+                await rconn.execute(
+                  'INSERT INTO users (id, full_name, email, password) VALUES (?, ?, ?, ?)',
+                  [u.id, u.full_name || '', u.email || `user${u.id}@local`, u.password || '']
+                );
+              }
+            }
+          }
+
+          // Ensure client exists remotely
+          if (targetClientId != null) {
+            const [lc] = await pool.query('SELECT id, name FROM stock_clients WHERE id = ? AND user_id = ?', [targetClientId, userId]);
+            const lcRow = lc && lc[0];
+            if (lcRow) {
+              await rconn.execute(
+                `INSERT INTO stock_clients (id, user_id, name)
+                 VALUES (?, ?, ?)
+                 ON DUPLICATE KEY UPDATE name = VALUES(name)`,
+                [lcRow.id, userId, lcRow.name]
+              );
+            }
+          }
+
+          // Ensure designation(s) exist remotely and update current_stock for both old and new when needed
+          if (targetDesId != null) {
+            const [ld] = await pool.query('SELECT id, name, current_stock FROM stock_designations WHERE id = ? AND user_id = ?', [targetDesId, userId]);
+            const ldRow = ld && ld[0];
+            if (ldRow) {
+              await rconn.execute(
+                `INSERT INTO stock_designations (id, user_id, name, current_stock)
+                 VALUES (?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE name = VALUES(name), current_stock = VALUES(current_stock)`,
+                [ldRow.id, userId, ldRow.name, Number(ldRow.current_stock || 0)]
+              );
+            }
+          }
+          if (oldDesId != null && oldDesId !== targetDesId) {
+            const [ldOld] = await pool.query('SELECT id, name, current_stock FROM stock_designations WHERE id = ? AND user_id = ?', [oldDesId, userId]);
+            const ldOldRow = ldOld && ldOld[0];
+            if (ldOldRow) {
+              await rconn.execute(
+                `INSERT INTO stock_designations (id, user_id, name, current_stock)
+                 VALUES (?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE name = VALUES(name), current_stock = VALUES(current_stock)`,
+                [ldOldRow.id, userId, ldOldRow.name, Number(ldOldRow.current_stock || 0)]
+              );
+            }
+          }
+
+          // Upsert mouvement by id with final values
+          await rconn.execute(
+            `INSERT INTO stock_mouvements (id, user_id, date, type, designation_id, quantite, prix, client_id, stock, stockR)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE
+               date=VALUES(date), type=VALUES(type), designation_id=VALUES(designation_id),
+               quantite=VALUES(quantite), prix=VALUES(prix), client_id=VALUES(client_id),
+               stock=VALUES(stock), stockR=VALUES(stockR)`,
+            [id, userId, finalDate, finalType, targetDesId, finalQty, finalPrice, targetClientId, newStock, newStockR]
+          );
+
+          await rconn.commit();
+        } catch (e) {
+          if (rconn) { try { await rconn.rollback(); } catch {}
+          }
+          logReplicationError('mouvement.edit', e, { mouvement_id: id, user_id: userId });
+        } finally {
+          if (rconn) rconn.release();
+        }
+      })();
+    }
+
     res.json({ success: true });
   } catch (err) {
     if (conn) await conn.rollback();
@@ -609,6 +780,34 @@ router.delete('/:id', authenticateToken, async (req, res) => {
       current_stock: newCurrent,
       updated_movements: updatedMovements
     });
+
+    // Best-effort remote delete replication
+    if (remotePool) {
+      (async () => {
+        let rconn;
+        try {
+          rconn = await remotePool.getConnection();
+          await rconn.beginTransaction();
+          await rconn.execute('DELETE FROM stock_mouvements WHERE id = ? AND user_id = ?', [mov.id, userId]);
+          // Update remote designation current_stock to reflect local
+          const [ld] = await pool.query('SELECT id, name, current_stock FROM stock_designations WHERE id = ? AND user_id = ?', [mov.designation_id, userId]);
+          const ldRow = ld && ld[0];
+          if (ldRow) {
+            await rconn.execute(
+              `INSERT INTO stock_designations (id, user_id, name, current_stock)
+               VALUES (?, ?, ?, ?)
+               ON DUPLICATE KEY UPDATE name = VALUES(name), current_stock = VALUES(current_stock)`,
+              [ldRow.id, userId, ldRow.name, Number(ldRow.current_stock || 0)]
+            );
+          }
+          await rconn.commit();
+        } catch (e) {
+          logReplicationError('mouvement.delete', e, { mouvement_id: mov.id, user_id: userId });
+        } finally {
+          if (rconn) rconn.release();
+        }
+      })();
+    }
   } catch (err) {
     if (conn) await conn.rollback();
     console.error('Erreur DELETE mouvement:', err.stack || err);

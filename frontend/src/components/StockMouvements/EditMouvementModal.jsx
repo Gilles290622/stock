@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 
 const formatDateForInput = (s) => {
   if (!s) return "";
@@ -46,7 +46,13 @@ const EditMouvementModal = ({
 }) => {
   if (!open || !form) return null;
 
-  const displayDate = formatDateForInput(form.date);
+  // État local éditable pour éviter que le formatage dérivé n'empêche la saisie fluide
+  const [dateInput, setDateInput] = useState(formatDateForInput(form.date));
+
+  // Si le mouvement change (ou ré-ouverture), resynchroniser
+  useEffect(() => {
+    setDateInput(formatDateForInput(form.date));
+  }, [form.id]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center backdrop-blur" role="dialog" aria-modal="true">
@@ -61,14 +67,17 @@ const EditMouvementModal = ({
                 <label className="block text-sm text-gray-600 mb-1">Date (JJ/MM/AAAA)</label>
                 <input
                   type="text"
-                  value={displayDate}
+                  value={dateInput}
                   onChange={(e) => {
                     const formatted = handleDateInputFormat(e.target.value);
+                    setDateInput(formatted);
                     setForm((p) => ({ ...p, date: formatted }));
                   }}
+                  onFocus={(e) => e.target.select()}
                   placeholder="jj/mm/aaaa"
                   className="w-full border rounded px-3 py-2"
                   inputMode="numeric"
+                  aria-label="Date du mouvement au format jj/mm/aaaa"
                 />
               </div>
 

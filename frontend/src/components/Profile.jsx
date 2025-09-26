@@ -1,4 +1,5 @@
 import React from "react";
+import AdminMigrationsPanel from './AdminMigrationsPanel';
 import { useNavigate } from "react-router-dom";
 
 export default function Profile({ user, onEdit }) {
@@ -9,7 +10,7 @@ export default function Profile({ user, onEdit }) {
       <h2 className="text-2xl font-bold mb-4 text-green-800">Profil utilisateur</h2>
       <div className="flex items-center gap-6 mb-6">
         <img
-          src={user?.logo || "/default-avatar.png"}
+          src={user?.logo || "/default-avatar.svg"}
           alt="Avatar utilisateur"
           className="h-20 w-20 rounded-full border object-cover"
         />
@@ -19,6 +20,7 @@ export default function Profile({ user, onEdit }) {
           <div className="text-gray-600">{user?.email}</div>
           <div className="text-gray-600">{user?.username}</div>
         </div>
+        <AdminMigrationsPanel user={user} />
       </div>
       <button
         className="bg-green-700 text-white px-4 py-2 rounded hover:bg-green-800"

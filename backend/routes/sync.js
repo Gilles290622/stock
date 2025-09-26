@@ -3,6 +3,8 @@ const router = express.Router();
 const pool = require('../config/db');
 const authenticateToken = require('../middleware/auth');
 const mysql = require('mysql2/promise');
+const remotePool = require('../config/remoteDb');
+const { getReplicationErrors, logReplicationError } = require('../utils/replicationLog');
 
 function normStr(s, { zeroIsEmpty = true } = {}) {
   if (s == null) return null;
@@ -152,6 +154,131 @@ async function getMysqlPoolFrom(reqBody) {
   return mysql.createPool({ host, user, password, database, port, waitForConnections: true, connectionLimit: 5 });
 }
 
+// POST /api/sync/pull/all  -> Importer clients + produits en une seule action (réservé user 7)
+router.post('/pull/all', authenticateToken, async (req, res) => {
+  try {
+    if (req.user?.id !== 7) {
+      return res.status(403).json({ error: 'Accès refusé' });
+    }
+    const annex = req.body?.annex ?? 1;
+    const targetUser = req.body?.user ?? 7;
+    const src = await getMysqlPoolFrom(req.body || {});
+    try {
+      const clientsRows = await fetchClients(src, annex);
+      const clientsResult = await upsertClientsLocal(targetUser, clientsRows);
+      const produitsRows = await fetchProduits(src, annex);
+      const produitsResult = await upsertProduitsLocal(targetUser, produitsRows);
+      return res.json({
+        success: true,
+        annex,
+        user: targetUser,
+        clients: { source: clientsRows.length, result: clientsResult },
+        produits: { source: produitsRows.length, result: produitsResult }
+      });
+    } finally {
+      await src.end();
+    }
+  } catch (err) {
+    console.error('Erreur pull/all:', err?.message || err);
+    res.status(500).json({ error: 'Erreur synchronisation source', details: err?.message || String(err) });
+  }
+});
+
+// GET /api/sync/remote-status -> check if remote pool is configured and reachable
+router.get('/remote-status', authenticateToken, async (req, res) => {
+  if (!remotePool) return res.json({ enabled: false });
+  let conn;
+  try {
+    conn = await remotePool.getConnection();
+    const [rows] = await conn.query('SELECT 1 as ok');
+    res.json({ enabled: true, ok: rows && rows[0] && rows[0].ok === 1 });
+  } catch (e) {
+    res.json({ enabled: true, ok: false, error: e?.message || String(e) });
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
+// GET /api/sync/replication-errors  (user 7) -> Liste des dernières erreurs de réplication
+router.get('/replication-errors', authenticateToken, (req, res) => {
+  if (req.user?.id !== 7) return res.status(403).json({ error: 'Accès refusé' });
+  return res.json({ errors: getReplicationErrors() });
+});
+
+// GET /api/sync/replication-errors/me -> erreurs filtrées pour l'utilisateur courant (si user_id présent dans l'entrée)
+router.get('/replication-errors/me', authenticateToken, (req, res) => {
+  const uid = req.user.id;
+  const all = getReplicationErrors();
+  const mine = all.filter(e => !('user_id' in e) || e.user_id === uid);
+  res.json({ user: uid, errors: mine });
+});
+
+// POST /api/sync/push/missing-mouvements -> détecte et pousse les mouvements absents côté distant pour l'utilisateur courant
+router.post('/push/missing-mouvements', authenticateToken, async (req, res) => {
+  if (!remotePool) return res.status(503).json({ error: 'Remote DB non configurée (REMOTE_DB_*)' });
+  const userId = req.user.id;
+  let rconn;
+  try {
+    rconn = await remotePool.getConnection();
+    // Récupérer IDs locaux
+    const [localRows] = await pool.query('SELECT id FROM stock_mouvements WHERE user_id = ? ORDER BY id ASC', [userId]);
+    const localIds = localRows.map(r => r.id);
+    // Récupérer IDs distants
+    const [remoteRows] = await rconn.execute('SELECT id FROM stock_mouvements WHERE user_id = ? ORDER BY id ASC', [userId]);
+    const remoteIdsSet = new Set(remoteRows.map(r => r.id));
+    const missing = localIds.filter(id => !remoteIdsSet.has(id));
+    const pushed = []; const failed = [];
+    for (const mid of missing) {
+      try {
+        await rconn.beginTransaction();
+        await pushOneMouvement(userId, mid, rconn);
+        await rconn.commit();
+        pushed.push(mid);
+      } catch (e) {
+        try { await rconn.rollback(); } catch {}
+        logReplicationError('mouvement.repair', e, { mouvement_id: mid, user_id: userId });
+        failed.push({ id: mid, error: e?.message || String(e) });
+      }
+    }
+    return res.json({
+      user: userId,
+      total_local: localIds.length,
+      remote_present: remoteIdsSet.size,
+      missing_count: missing.length,
+      pushed_count: pushed.length,
+      failed_count: failed.length,
+      failed,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: 'Erreur détection/push manquants', details: err?.message || String(err) });
+  } finally {
+    if (rconn) rconn.release();
+  }
+});
+
+// GET /api/sync/remote/mouvement/:id -> verify mouvement presence in remote DB for current user
+router.get('/remote/mouvement/:id', authenticateToken, async (req, res) => {
+  if (!remotePool) return res.status(503).json({ error: 'Remote DB non configurée (REMOTE_DB_*)' });
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'ID invalide' });
+  const userId = req.user.id;
+  let conn;
+  try {
+    conn = await remotePool.getConnection();
+    const [rows] = await conn.execute(
+      `SELECT id, user_id, date, type, designation_id, quantite, prix, client_id, stock, stockR
+         FROM stock_mouvements WHERE id = ? AND user_id = ?`,
+      [id, userId]
+    );
+    if (rows.length === 0) return res.json({ found: false });
+    return res.json({ found: true, mouvement: rows[0] });
+  } catch (e) {
+    return res.status(500).json({ error: 'Erreur interrogation base distante', details: e?.message || String(e) });
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
 // POST /api/sync/:entity  { annex?: 1, user?: 7 }
 router.post('/:entity', authenticateToken, async (req, res) => {
   try {
@@ -185,3 +312,319 @@ router.post('/:entity', authenticateToken, async (req, res) => {
 });
 
 module.exports = router;
+
+// =====================
+// PUSH to remote MySQL
+// =====================
+
+async function upsertRemoteUser(rconn, userId) {
+  const [ru] = await rconn.execute('SELECT id FROM users WHERE id = ?', [userId]);
+  if (ru.length === 0) {
+    const [lu] = await pool.query('SELECT id, full_name, email, password FROM users WHERE id = ?', [userId]);
+    const u = lu && lu[0];
+    if (u) {
+      const [ruByEmail] = await rconn.execute('SELECT id FROM users WHERE email = ?', [u.email]);
+      if (ruByEmail.length === 0) {
+        await rconn.execute('INSERT INTO users (id, full_name, email, password) VALUES (?, ?, ?, ?)', [u.id, u.full_name || '', u.email || `user${u.id}@local`, u.password || '']);
+      }
+    }
+  }
+}
+
+async function pushClients(userId, rconn) {
+  const [rows] = await pool.query(
+    `SELECT id, user_id, name, address, phone, email
+       FROM stock_clients WHERE user_id = ? ORDER BY id ASC`,
+    [userId]
+  );
+  for (const c of rows) {
+    await rconn.execute(
+      `INSERT INTO stock_clients (id, user_id, name, address, phone, email)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE name=VALUES(name), address=VALUES(address), phone=VALUES(phone), email=VALUES(email)`,
+      [c.id, userId, c.name, c.address || null, c.phone || null, c.email || null]
+    );
+  }
+  return rows.length;
+}
+
+async function pushDesignations(userId, rconn) {
+  const [rows] = await pool.query(
+    `SELECT id, user_id, name, current_stock, categorie
+       FROM stock_designations WHERE user_id = ? ORDER BY id ASC`,
+    [userId]
+  );
+  for (const d of rows) {
+    await rconn.execute(
+      `INSERT INTO stock_designations (id, user_id, name, current_stock, categorie)
+       VALUES (?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE name=VALUES(name), current_stock=VALUES(current_stock), categorie=VALUES(categorie)`,
+      [d.id, userId, d.name, Number(d.current_stock || 0), d.categorie || null]
+    );
+  }
+  return rows.length;
+}
+
+async function pushCategories(rconn) {
+  // categories sont globales (pas par user)
+  // Ensure remote table exists
+  try {
+    await rconn.execute(
+      `CREATE TABLE IF NOT EXISTS stock_categories (
+         id INT AUTO_INCREMENT PRIMARY KEY,
+         name VARCHAR(190) NOT NULL UNIQUE
+       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
+    );
+  } catch (e) {
+    // ignore if no DDL permission; inserts may fail later
+  }
+  const [rows] = await pool.query(`SELECT id, name FROM stock_categories ORDER BY id ASC`);
+  for (const c of rows) {
+    await rconn.execute(
+      `INSERT INTO stock_categories (id, name)
+       VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE name=VALUES(name)`,
+      [c.id, c.name]
+    );
+  }
+  return rows.length;
+}
+
+async function pushMouvements(userId, rconn) {
+  const [rows] = await pool.query(
+    `SELECT id, user_id, strftime('%Y-%m-%d', date) AS date, type, designation_id, quantite, prix, client_id, stock, stockR
+       FROM stock_mouvements WHERE user_id = ? ORDER BY id ASC`,
+    [userId]
+  );
+  for (const m of rows) {
+    await rconn.execute(
+      `INSERT INTO stock_mouvements (id, user_id, date, type, designation_id, quantite, prix, client_id, stock, stockR)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE date=VALUES(date), type=VALUES(type), designation_id=VALUES(designation_id), quantite=VALUES(quantite), prix=VALUES(prix), client_id=VALUES(client_id), stock=VALUES(stock), stockR=VALUES(stockR)`,
+      [m.id, userId, m.date, m.type, m.designation_id, m.quantite, m.prix, m.client_id, m.stock, m.stockR]
+    );
+  }
+  return rows.length;
+}
+
+async function pushPaiements(userId, rconn) {
+  const [rows] = await pool.query(
+    `SELECT id, mouvement_id, user_id, montant, strftime('%Y-%m-%d', date) AS date
+       FROM stock_paiements WHERE user_id = ? OR user_id IS NULL ORDER BY id ASC`,
+    [userId]
+  );
+  for (const p of rows) {
+    // Ensure mouvement exists remotely (minimal)
+    const [rm] = await rconn.execute('SELECT id FROM stock_mouvements WHERE id = ? AND user_id = ?', [p.mouvement_id, userId]);
+    if (rm.length === 0) {
+      const [lm] = await pool.query(
+        `SELECT id, user_id, strftime('%Y-%m-%d', date) AS date, type, designation_id, quantite, prix, client_id, stock, stockR
+           FROM stock_mouvements WHERE id = ? AND user_id = ?`,
+        [p.mouvement_id, userId]
+      );
+      const m = lm && lm[0];
+      if (m) {
+        await rconn.execute(
+          `INSERT INTO stock_mouvements (id, user_id, date, type, designation_id, quantite, prix, client_id, stock, stockR)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE date=VALUES(date)`,
+          [m.id, userId, m.date, m.type, m.designation_id, m.quantite, m.prix, m.client_id, m.stock, m.stockR]
+        );
+      }
+    }
+    await rconn.execute(
+      `INSERT INTO stock_paiements (id, mouvement_id, user_id, montant, date)
+       VALUES (?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE montant=VALUES(montant), date=VALUES(date)`,
+      [p.id, p.mouvement_id, userId, Number(p.montant), p.date]
+    );
+  }
+  return rows.length;
+}
+
+async function pushDepenses(userId, rconn) {
+  const [rows] = await pool.query(
+    `SELECT id, user_id, strftime('%Y-%m-%d', date) AS date, libelle, montant, destinataire
+       FROM stock_depenses WHERE user_id = ? ORDER BY id ASC`,
+    [userId]
+  );
+  for (const d of rows) {
+    await rconn.execute(
+      `INSERT INTO stock_depenses (id, user_id, date, libelle, montant, destinataire)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE date=VALUES(date), libelle=VALUES(libelle), montant=VALUES(montant), destinataire=VALUES(destinataire)`,
+      [d.id, userId, d.date, d.libelle, Number(d.montant), d.destinataire || null]
+    );
+  }
+  return rows.length;
+}
+
+// Push a single mouvement with dependencies (user, client, designation)
+async function pushOneMouvement(userId, mouvementId, rconn) {
+  // Load mouvement from local
+  const [rows] = await pool.query(
+    `SELECT id, user_id, strftime('%Y-%m-%d', date) AS date, type, designation_id, quantite, prix, client_id, stock, stockR
+       FROM stock_mouvements WHERE id = ? AND user_id = ?`,
+    [mouvementId, userId]
+  );
+  if (rows.length === 0) throw new Error('Mouvement introuvable');
+  const m = rows[0];
+
+  // Ensure user exists remotely
+  await upsertRemoteUser(rconn, userId);
+
+  // Ensure client exists remotely
+  if (m.client_id) {
+    const [lc] = await pool.query('SELECT id, name FROM stock_clients WHERE id = ? AND user_id = ?', [m.client_id, userId]);
+    const lcRow = lc && lc[0];
+    if (lcRow) {
+      await rconn.execute(
+        `INSERT INTO stock_clients (id, user_id, name)
+         VALUES (?, ?, ?)
+         ON DUPLICATE KEY UPDATE name = VALUES(name)`,
+        [lcRow.id, userId, lcRow.name]
+      );
+    }
+  }
+
+  // Ensure designation exists remotely and sync current_stock
+  if (m.designation_id) {
+    const [ld] = await pool.query('SELECT id, name, current_stock FROM stock_designations WHERE id = ? AND user_id = ?', [m.designation_id, userId]);
+    const ldRow = ld && ld[0];
+    if (ldRow) {
+      await rconn.execute(
+        `INSERT INTO stock_designations (id, user_id, name, current_stock)
+         VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE name = VALUES(name), current_stock = VALUES(current_stock)`,
+        [ldRow.id, userId, ldRow.name, Number(ldRow.current_stock || 0)]
+      );
+    }
+  }
+
+  // Upsert mouvement
+  await rconn.execute(
+    `INSERT INTO stock_mouvements (id, user_id, date, type, designation_id, quantite, prix, client_id, stock, stockR)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       date=VALUES(date), type=VALUES(type), designation_id=VALUES(designation_id),
+       quantite=VALUES(quantite), prix=VALUES(prix), client_id=VALUES(client_id),
+       stock=VALUES(stock), stockR=VALUES(stockR)`,
+    [m.id, userId, m.date, m.type, m.designation_id, m.quantite, m.prix, m.client_id, m.stock, m.stockR]
+  );
+  return { id: m.id };
+}
+
+// POST /api/sync/push/mouvement/:id  -> re-push un seul mouvement (dépannage)
+router.post('/push/mouvement/:id', authenticateToken, async (req, res) => {
+  try {
+    if (!remotePool) return res.status(503).json({ error: 'Remote DB non configurée (REMOTE_DB_*)' });
+    const userId = req.user.id;
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'ID invalide' });
+
+    const rconn = await remotePool.getConnection();
+    try {
+      await rconn.beginTransaction();
+      const result = await pushOneMouvement(userId, id, rconn);
+      await rconn.commit();
+      return res.json({ success: true, mouvement: result });
+    } catch (e) {
+      try { await rconn.rollback(); } catch {}
+      console.error('Erreur push mouvement unique:', e?.message || e);
+      return res.status(500).json({ error: 'Erreur lors du push du mouvement', details: e?.message || String(e) });
+    } finally {
+      rconn.release();
+    }
+  } catch (err) {
+    console.error('Erreur /push/mouvement/:id:', err?.message || err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// GET /api/sync/check/mouvement/:id -> verify that a mouvement exists on remote for this user
+router.get('/check/mouvement/:id', authenticateToken, async (req, res) => {
+  try {
+    if (!remotePool) return res.status(503).json({ error: 'Remote DB non configurée (REMOTE_DB_*)' });
+    const userId = req.user.id;
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'ID invalide' });
+
+    let rconn;
+    try {
+      rconn = await remotePool.getConnection();
+      const [rows] = await rconn.execute(
+        `SELECT id, user_id, date, type, designation_id, quantite, prix, client_id, stock, stockR
+           FROM stock_mouvements WHERE id = ? AND user_id = ?`,
+        [id, userId]
+      );
+      if (rows.length === 0) return res.json({ present: false });
+      return res.json({ present: true, mouvement: rows[0] });
+    } finally {
+      if (rconn) rconn.release();
+    }
+  } catch (err) {
+    console.error('Erreur check mouvement remote:', err?.message || err);
+    res.status(500).json({ error: 'Erreur serveur', details: err?.message || String(err) });
+  }
+});
+
+// POST /api/sync/push/:entity  -> entity in: clients|designations|mouvements|paiements|depenses|all
+router.post('/push/:entity', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const entity = String(req.params.entity || '').toLowerCase();
+    if (!remotePool) return res.status(503).json({ error: 'Remote DB non configurée (REMOTE_DB_*)' });
+
+    const valid = ['categories', 'clients', 'designations', 'mouvements', 'paiements', 'depenses', 'all'];
+    if (!valid.includes(entity)) return res.status(400).json({ error: 'Entité invalide' });
+
+    let rconn = await remotePool.getConnection();
+    try {
+      // Always ensure user exists remotely first
+      await upsertRemoteUser(rconn, userId);
+
+      const result = {};
+      if (entity === 'categories' || entity === 'all') {
+        await rconn.beginTransaction();
+        result.categories = await pushCategories(rconn);
+        await rconn.commit();
+      }
+      if (entity === 'clients' || entity === 'all') {
+        await rconn.beginTransaction();
+        result.clients = await pushClients(userId, rconn);
+        await rconn.commit();
+      }
+      if (entity === 'designations' || entity === 'all') {
+        await rconn.beginTransaction();
+        result.designations = await pushDesignations(userId, rconn);
+        await rconn.commit();
+      }
+      if (entity === 'mouvements' || entity === 'all') {
+        await rconn.beginTransaction();
+        result.mouvements = await pushMouvements(userId, rconn);
+        await rconn.commit();
+      }
+      if (entity === 'paiements' || entity === 'all') {
+        await rconn.beginTransaction();
+        result.paiements = await pushPaiements(userId, rconn);
+        await rconn.commit();
+      }
+      if (entity === 'depenses' || entity === 'all') {
+        await rconn.beginTransaction();
+        result.depenses = await pushDepenses(userId, rconn);
+        await rconn.commit();
+      }
+
+      return res.json({ success: true, user: userId, entity, result });
+    } catch (e) {
+      try { await rconn.rollback(); } catch {}
+      console.error('Erreur push sync:', e?.message || e);
+      return res.status(500).json({ error: 'Erreur lors du push distant', details: e?.message || String(e) });
+    } finally {
+      if (rconn) rconn.release();
+    }
+  } catch (err) {
+    console.error('Erreur /sync/push:', err?.message || err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});

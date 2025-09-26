@@ -16,32 +16,103 @@ const InvoiceModal = ({
 }) => {
   if (!open) return null;
 
-  const printInvoice = () => {
+  const [disableWatermark, setDisableWatermark] = React.useState(false);
+  const [logoBase64, setLogoBase64] = React.useState(null);
+  const [logoStatus, setLogoStatus] = React.useState('idle'); // idle|loading|ok|error
+  const [showEmitterFooter, setShowEmitterFooter] = React.useState(true); // pied de page émetteur
+
+  // Derive initials for fallback avatar
+  const initials = React.useMemo(() => {
+    const name = (user?.full_name || user?.username || 'U').trim();
+    const parts = name.split(/\s+/).filter(Boolean);
+    if (!parts.length) return 'U';
+    const first = parts[0][0] || '';
+    const last = parts.length > 1 ? parts[parts.length - 1][0] : '';
+    return (first + last).toUpperCase();
+  }, [user]);
+
+  const makeAbsoluteLogo = React.useCallback((url) => {
+    if (!url) return '';
+    if (/^https?:\/\//i.test(url)) return url;
+    const path = url.startsWith('/') ? url : '/' + url;
+    return window.location.origin + path;
+  }, []);
+
+  // Prefetch / convert logo to base64 once (prevents print/PDF race conditions)
+  React.useEffect(() => {
+    const raw = user?.logo;
+    if (!raw) { setLogoBase64(null); setLogoStatus('error'); return; }
+    const abs = makeAbsoluteLogo(raw);
+    setLogoStatus('loading');
+    fetch(abs).then(async r => {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const blob = await r.blob();
+      if (blob.size > 500 * 1024) {
+        // Attempt simple downscale compression via canvas
+        const img = await new Promise((res, rej) => {
+          const im = new Image();
+          im.onload = () => res(im);
+          im.onerror = rej;
+          im.src = URL.createObjectURL(blob);
+        });
+        const scale = Math.sqrt(500 * 1024 / blob.size); // approximate
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(64, Math.floor(img.naturalWidth * scale));
+        canvas.height = Math.max(64, Math.floor(img.naturalHeight * scale));
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        setLogoBase64(canvas.toDataURL('image/jpeg', 0.85));
+        setLogoStatus('ok');
+        URL.revokeObjectURL(img.src);
+        return;
+      }
+      const fr = new FileReader();
+      fr.onload = () => { setLogoBase64(fr.result); setLogoStatus('ok'); };
+      fr.onerror = () => { setLogoBase64(null); setLogoStatus('error'); };
+      fr.readAsDataURL(blob);
+    }).catch((e) => { console.warn('[invoice] logo fetch failed', e); setLogoBase64(null); setLogoStatus('error'); });
+  }, [user?.logo, makeAbsoluteLogo]);
+
+  // Petite fonction d'attente si l'utilisateur clique trop vite sur Imprimer / PDF
+  const waitLogoIfLoading = async (maxMs = 1200) => {
+    const start = Date.now();
+    while (logoStatus === 'loading' && Date.now() - start < maxMs) {
+      await new Promise(r => setTimeout(r, 100));
+    }
+  };
+
+  const printInvoice = async () => {
+    await waitLogoIfLoading();
     const win = window.open("", "PRINT", "height=800,width=900");
     if (!win) return;
-
+    // Normalisation de l'URL logo (peut être enregistré en relatif dans la BDD)
+    const hasLogo = !!logoBase64;
     const styles = `
       <style>
-        body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica Neue, Arial; padding: 16px; color: #111827; }
-        .header { display:flex; align-items:center; justify-content:space-between; margin-bottom: 12px; }
-        .brand { font-size: 20px; font-weight: 700; color:#065f46; }
+        body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica Neue, Arial; padding: 16px; color: #111827; position:relative; }
+        .header { display:flex; align-items:center; justify-content:space-between; margin-bottom: 12px; position:relative; z-index:2; }
+        .brand { display:flex; align-items:center; gap:8px; font-size: 20px; font-weight: 700; color:#065f46; }
+        .brand img { height:48px; width:48px; object-fit:cover; border-radius:8px; border:1px solid #d1d5db; }
         .meta { text-align:right; font-size:12px; color:#374151; }
-        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
-        .card { border: 1px solid #e5e7eb; border-radius: 6px; padding: 8px; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; position:relative; z-index:2; }
+        .card { border: 1px solid #e5e7eb; border-radius: 6px; padding: 8px; background:#ffffffcc; backdrop-filter:blur(2px); }
         .title { font-weight: 600; margin-bottom: 4px; }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { border-left: none; border-right: none; border-top: 1px solid #e5e7eb; border-bottom: 1px solid #e5e7eb; padding: 6px 8px; font-size: 12px; }
+        table { width: 100%; border-collapse: collapse; position:relative; z-index:2; }
+        th, td { border-left: none; border-right: none; border-top: 1px solid #e5e7eb; border-bottom: 1px solid #e5e7eb; padding: 6px 8px; font-size: 12px; background:transparent; }
         thead tr { background: #f3f4f6; }
         th { background: transparent !important; text-align: left; }
         tfoot tr.total { background: #eaeaea; }
         tfoot td { font-weight: 600; border-top: none; border-bottom: none; }
         .right { text-align: right; }
         .muted { color:#6b7280; font-size:12px; }
+        .watermark { position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); opacity:0.4; z-index:1; pointer-events:none; }
+        .watermark img { max-width:60vw; max-height:70vh; width:auto; height:auto; filter:grayscale(10%) contrast(105%); }
         @media print {
           body, table, thead tr, tfoot tr.total, th, td {
             -webkit-print-color-adjust: exact;
             print-color-adjust: exact;
           }
+          .card { background:#ffffffd9 !important; }
         }
       </style>
     `;
@@ -60,6 +131,15 @@ const InvoiceModal = ({
       )
       .join("");
 
+    const emitterFooterHtml = showEmitterFooter && (company?.name || company?.address || company?.phone || company?.email)
+      ? `<div style="margin-top:28px;font-size:11px;color:#374151;opacity:.85;border-top:1px solid #e5e7eb;padding-top:6px;">${[
+          company?.name,
+          company?.address,
+          company?.phone,
+          company?.email
+        ].filter(Boolean).join(' · ')}</div>`
+      : '';
+
     const html = `
       <!doctype html>
       <html>
@@ -69,28 +149,24 @@ const InvoiceModal = ({
           ${styles}
         </head>
         <body>
+          ${hasLogo && !disableWatermark ? `<div class="watermark"><img src="${logoBase64}" alt="logo" /></div>` : ''}
           <div class="header">
-            <div class="brand">${user?.full_name || "Votre entreprise"}</div>
+            <div class="brand">${hasLogo ? `<img src="${logoBase64}" alt="logo" />` : `<div style=\"height:48px;width:48px;border-radius:8px;display:flex;align-items:center;justify-content:center;background:#065f46;color:white;font-weight:600;font-size:18px;\">${initials}</div>`}
+              <div style="display:flex;flex-direction:column;gap:2px;">
+                <span style="font-weight:700;">${(user?.entreprise || user?.full_name || user?.username || '').trim()}</span>
+                ${(user?.full_name && user?.entreprise && user.full_name.trim() !== user.entreprise.trim()) ? `<span style=\"font-size:11px;color:#374151;font-weight:500;\">${user.full_name.trim()}</span>` : ''}
+              </div>
+            </div>
             <div class="meta">
               <div><strong>Facture:</strong> ${invoiceNumber}</div>
             </div>
           </div>
-
-          <div class="grid">
-            <div class="card">
-              <div class="title">Émetteur</div>
-              <div>${company?.name || "Votre entreprise"}</div>
-              ${company?.address ? `<div class="muted">${company.address}</div>` : ""}
-              ${company?.phone ? `<div class="muted">${company.phone}</div>` : ""}
-              ${company?.email ? `<div class="muted">${company.email}</div>` : ""}
-            </div>
-            <div class="card" style="border:none;">
-              <div class="title">Client</div>
-              <div>${clientInfo?.name || "N/A"}</div>
-              ${clientInfo?.address ? `<div class="muted">${clientInfo.address}</div>` : ""}
-              ${clientInfo?.phone ? `<div class="muted">${clientInfo.phone}</div>` : ""}
-              ${clientInfo?.email ? `<div class="muted">${clientInfo.email}</div>` : ""}
-            </div>
+          <div style="margin-bottom:12px;text-align:right;">
+            <div style="font-weight:600;margin-bottom:4px;">Client</div>
+            <div>${clientInfo?.name || "N/A"}</div>
+            ${clientInfo?.address ? `<div class="muted">${clientInfo.address}</div>` : ""}
+            ${clientInfo?.phone ? `<div class="muted">${clientInfo.phone}</div>` : ""}
+            ${clientInfo?.email ? `<div class="muted">${clientInfo.email}</div>` : ""}
           </div>
 
           <table>
@@ -109,19 +185,30 @@ const InvoiceModal = ({
             <tfoot>
               <tr class="total">
                 <td colspan="4" class="right">Total</td>
-                <td class="right">${Number(total).toLocaleString("fr-FR")} F CFA</td>
+                <td class="right">${Number(total).toLocaleString("fr-FR")}</td>
               </tr>
             </tfoot>
           </table>
 
-          <p class="muted" style="margin-top:12px;">
-            Arrêté la présente facture à la somme de ${amountInWords || ""}.
-          </p>
+          <p class="muted" style="margin-top:12px;">Arrêté la présente facture à la somme de ${amountInWords || ""}.</p>
+          ${emitterFooterHtml}
 
           <script>
+            // Attendre chargement des images pour éviter impression sans logo
+            function waitImages(cb){
+              const imgs = Array.from(document.images || []);
+              if(imgs.length === 0) return cb();
+              let loaded = 0; let done = false;
+              const check = () => { if(done) return; if(++loaded >= imgs.length){ done = true; cb(); } };
+              imgs.forEach(im => { if(im.complete) check(); else { im.addEventListener('load', check); im.addEventListener('error', check); } });
+              // Sécurité timeout 800ms
+              setTimeout(()=>{ if(!done){ done = true; cb(); } }, 800);
+            }
             window.onload = function(){
-              window.print();
-              window.onafterprint = function(){ window.close(); };
+              waitImages(function(){
+                try { window.print(); } catch {}
+                window.onafterprint = function(){ try { window.close(); } catch{} };
+              });
             };
           </script>
         </body>
@@ -132,8 +219,54 @@ const InvoiceModal = ({
     win.document.write(html);
     win.document.close();
   };
+  // Helpers de chargement images
+  // (makeAbsoluteLogo replaced by hook above)
 
-  const generateInvoicePdf = () => {
+  const loadImageDataUrl = (url, targetOpacity = 0.35) => new Promise((resolve) => {
+    if (!url) return resolve(null);
+    try {
+      const img = new Image();
+      // crossOrigin seulement si externe
+      if (/^https?:\/\//i.test(url) && !url.startsWith(window.location.origin)) {
+        img.crossOrigin = 'anonymous';
+      }
+      img.onload = () => {
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+          const ctx = canvas.getContext('2d');
+          ctx.globalAlpha = targetOpacity;
+          ctx.drawImage(img, 0, 0);
+          resolve(canvas.toDataURL('image/png'));
+        } catch { resolve(null); }
+      };
+      img.onerror = () => resolve(null);
+      img.src = url;
+    } catch { resolve(null); }
+  });
+
+  const loadPlainImageDataUrl = (url, size = 48) => new Promise((resolve) => {
+    if (!url) return resolve(null);
+    const img = new Image();
+    if (/^https?:\/\//i.test(url) && !url.startsWith(window.location.origin)) {
+      img.crossOrigin = 'anonymous';
+    }
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas');
+        const finalSize = Math.min(size, img.naturalWidth, img.naturalHeight);
+        canvas.width = finalSize; canvas.height = finalSize;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, finalSize, finalSize);
+        resolve(canvas.toDataURL('image/png'));
+      } catch { resolve(null); }
+    };
+    img.onerror = () => resolve(null);
+    img.src = url;
+  });
+
+  const generateInvoicePdf = async () => {
+    await waitLogoIfLoading();
     const doc = new jsPDF({ unit: "pt", format: "a4" });
     const marginX = 40;
     const marginY = 40;
@@ -141,18 +274,47 @@ const InvoiceModal = ({
     doc.setFont("helvetica", "normal");
     doc.setFontSize(16);
     doc.setTextColor(6, 95, 70);
-    doc.text(user?.full_name || "Votre entreprise", marginX, marginY);
+  const rawEntreprise = (user?.entreprise || '').trim();
+  const rawFullName = (user?.full_name || '').trim();
+  const titleText = (rawEntreprise || rawFullName || user?.username || '').trim();
+    const logoAbs = logoBase64 || makeAbsoluteLogo(user?.logo);
+    let textOffsetX = marginX;
+    const imgSize = 32;
+    if (logoAbs) {
+      try {
+        const smallLogo = logoBase64 || await loadPlainImageDataUrl(logoAbs, 40);
+        if (smallLogo) {
+          doc.addImage(smallLogo, 'PNG', marginX, marginY - imgSize + 4, imgSize, imgSize);
+          textOffsetX = marginX + imgSize + 10;
+        }
+      } catch {}
+    }
+    doc.text(titleText, textOffsetX, marginY);
+    // Sous-ligne nom complet si différent
+    if (rawFullName && rawEntreprise && rawFullName !== rawEntreprise) {
+      doc.setFontSize(10);
+      doc.setTextColor(55,65,81);
+      doc.text(rawFullName, textOffsetX, marginY + 14);
+      doc.setTextColor(17,24,39);
+    }
 
     doc.setTextColor(17, 24, 39);
     doc.setFontSize(10);
-    let y = marginY + 18;
-    if (company?.address) { doc.text(String(company.address), marginX, y); y += 14; }
-    if (company?.phone)   { doc.text(String(company.phone),   marginX, y); y += 14; }
-    if (company?.email)   { doc.text(String(company.email),   marginX, y); y += 14; }
+  let y = marginY + 18;
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const rightMargin = pageWidth - marginX;
+  // Client block right aligned (top right)
+  let clientY = marginY + 2;
+  doc.setFontSize(11);
+  doc.text('Client', rightMargin, clientY, { align: 'right' });
+  doc.setFontSize(10); clientY += 14;
+  doc.text(clientInfo?.name || 'N/A', rightMargin, clientY, { align: 'right' }); clientY += 12;
+  if (clientInfo?.address) { doc.text(String(clientInfo.address), rightMargin, clientY, { align: 'right' }); clientY += 12; }
+  if (clientInfo?.phone) { doc.text(String(clientInfo.phone), rightMargin, clientY, { align: 'right' }); clientY += 12; }
+  if (clientInfo?.email) { doc.text(String(clientInfo.email), rightMargin, clientY, { align: 'right' }); clientY += 12; }
 
-    const pageWidth = doc.internal.pageSize.getWidth();
-    doc.setFontSize(12);
-    doc.text(`Facture: ${invoiceNumber}`, pageWidth - marginX, marginY, { align: "right" });
+  doc.setFontSize(12);
+  doc.text(`Facture: ${invoiceNumber}`, rightMargin, marginY, { align: "right" });
 
     const clientStartY = y + 12;
     doc.setFontSize(12); doc.text("Client", marginX, clientStartY);
@@ -226,16 +388,50 @@ const InvoiceModal = ({
     doc.setTextColor(17, 24, 39);
     doc.setFontSize(11);
     doc.text("Total", marginX + usableWidth - 200, barY + 18);
-    const totalText = `${formatFrSpace(total)} F CFA`;
+  const totalText = `${formatFrSpace(total)}`;
     doc.text(totalText, marginX + usableWidth - 10, barY + 18, { align: "right" });
 
     const footY = barY + barH + 22;
     doc.setFontSize(10);
     doc.setTextColor(55, 65, 81);
     if (amountInWords) {
-      doc.text(`Arrêté la présente facture à la somme de ${amountInWords}.`, marginX, footY, {
-        maxWidth: usableWidth,
-      });
+      doc.text(`Arrêté la présente facture à la somme de ${amountInWords}.`, marginX, footY, { maxWidth: usableWidth });
+    }
+    if (showEmitterFooter) {
+      const parts = [company?.name, company?.address, company?.phone, company?.email].filter(Boolean);
+      if (parts.length) {
+        doc.setFontSize(9);
+        doc.setTextColor(80, 90, 100);
+        const pageH = doc.internal.pageSize.getHeight();
+        doc.text(parts.join(' · '), marginX, pageH - 28, { maxWidth: usableWidth });
+      }
+    }
+
+    // Watermark centré (après le contenu pour simplicité, opacité déjà appliquée dans dataURL)
+    if (logoAbs && !disableWatermark) {
+      try {
+        const watermark = logoBase64 || await loadImageDataUrl(logoAbs, 0.28);
+        if (watermark) {
+          const addMark = () => {
+            const pageW = doc.internal.pageSize.getWidth();
+            const pageH = doc.internal.pageSize.getHeight();
+            const wmW = pageW * 0.55;
+            const wmH = wmW * 0.75; // ratio approximatif
+            const x = (pageW - wmW) / 2;
+            const y = (pageH - wmH) / 2;
+            doc.addImage(watermark, 'PNG', x, y, wmW, wmH, undefined, 'FAST');
+          };
+          addMark();
+          // Multi-page watermark
+          const pageCount = doc.getNumberOfPages();
+            for (let p = 2; p <= pageCount; p++) {
+              doc.setPage(p);
+              addMark();
+            }
+          // reset to first page
+          doc.setPage(1);
+        }
+      } catch {}
     }
 
     const fileName = `Facture_${invoiceNumber}.pdf`;
@@ -244,26 +440,28 @@ const InvoiceModal = ({
   };
 
   const buildInvoiceText = () => {
-    const title = `Facture ${invoiceNumber} - ${company?.name || "Votre entreprise"}`;
-    const client = `Client: ${clientInfo?.name || "N/A"}`;
-    const totalNum = `${formatFrSpace(total)} F CFA`;
+  const title = `Facture ${invoiceNumber} - ${(company?.name || rawEntreprise || rawFullName || user?.username || '').trim()}`;
+  const client = `Client: ${clientInfo?.name || "N/A"}`;
+  const entLine = rawEntreprise ? `Entreprise: ${rawEntreprise}` : '';
+  const fnLine = (rawFullName && rawFullName !== rawEntreprise) ? `Nom: ${rawFullName}` : '';
+  const totalNum = `${formatFrSpace(total)}`;
     const totalWords = amountInWords || "";
     const details =
       (Array.isArray(lines) ? lines : [])
         .map((l, i) =>
           `${i + 1}. ${capFrFirstLowerRest(l.designation_name)} — ` +
           `${formatFrSpace(l.quantite)} x ${formatFrSpace(l.prix)} = ` +
-          `${formatFrSpace(l.montant)} F CFA`
+          `${formatFrSpace(l.montant)}`
         )
         .join("\n") || "Aucune ligne";
 
-    return [title, client, `Total: ${totalNum}`, totalWords ? `Montant en lettres: ${totalWords}` : "", "", "Détails:", details]
+    return [title, entLine, fnLine, client, `Total: ${totalNum}`, totalWords ? `Montant en lettres: ${totalWords}` : "", "", "Détails:", details]
       .filter(Boolean)
       .join("\n");
   };
 
   const shareInvoicePdfWhatsApp = async () => {
-    const { blob, fileName } = generateInvoicePdf();
+    const { blob, fileName } = await generateInvoicePdf();
     const file = new File([blob], fileName, { type: "application/pdf" });
     const shareData = { files: [file], title: `Facture ${invoiceNumber}`, text: buildInvoiceText() };
 
@@ -287,33 +485,47 @@ const InvoiceModal = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center backdrop-blur" role="dialog" aria-modal="true">
+  <div className="fixed inset-0 z-50 flex items-center justify-center backdrop-blur" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
       <div className="relative bg-white rounded-lg shadow-xl w-full max-w-3xl mx-4">
         <div className="px-6 pt-6">
-          <div className="flex items-start justify-between">
-            <h2 className="text-lg font-semibold text-gray-900">Facture</h2>
+          <div className="flex items-start justify-between gap-4 flex-wrap">
+            <div className="flex items-center gap-2">
+              <h2 className="text-lg font-semibold text-gray-900">Facture</h2>
+              <div className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 border">
+                {logoStatus === 'loading' && 'Logo…'}
+                {logoStatus === 'ok' && 'Logo prêt'}
+                {logoStatus === 'error' && 'Logo indisponible'}
+                {logoStatus === 'idle' && '—'}
+              </div>
+            </div>
             <div className="text-right text-sm text-gray-600">
               <div><span className="font-medium text-gray-800">Facture:</span> {invoiceNumber}</div>
             </div>
           </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3">
-            <div className="border rounded p-3">
-              <div className="font-semibold mb-1">Émetteur</div>
-              <div>{company?.name || "Votre entreprise"}</div>
-              {company?.address && <div className="text-sm text-gray-600">{company.address}</div>}
-              {company?.phone && <div className="text-sm text-gray-600">{company.phone}</div>}
-              {company?.email && <div className="text-sm text-gray-600">{company.email}</div>}
-            </div>
-            <div className="p-3">
-              <div className="font-semibold mb-1">Client</div>
-              <div>{clientInfo?.name || "N/A"}</div>
-              {clientInfo?.address && <div className="text-sm text-gray-600">{clientInfo.address}</div>}
-              {clientInfo?.phone && <div className="text-sm text-gray-600">{clientInfo.phone}</div>}
-              {clientInfo?.email && <div className="text-sm text-gray-600">{clientInfo.email}</div>}
-            </div>
+          <div className="mt-2 flex items-center gap-4 flex-wrap">
+            <label className="inline-flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
+              <input type="checkbox" className="rounded border-gray-300" checked={disableWatermark} onChange={e=>setDisableWatermark(e.target.checked)} />
+              <span>Sans filigrane (version client)</span>
+            </label>
+            <label className="inline-flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
+              <input type="checkbox" className="rounded border-gray-300" checked={showEmitterFooter} onChange={e=>setShowEmitterFooter(e.target.checked)} />
+              <span>Pied de page émetteur</span>
+            </label>
           </div>
+
+          <div className="border rounded p-3 mt-3">
+            <div className="font-semibold mb-1">Client</div>
+            <div>{clientInfo?.name || "N/A"}</div>
+            {clientInfo?.address && <div className="text-sm text-gray-600">{clientInfo.address}</div>}
+            {clientInfo?.phone && <div className="text-sm text-gray-600">{clientInfo.phone}</div>}
+            {clientInfo?.email && <div className="text-sm text-gray-600">{clientInfo.email}</div>}
+          </div>
+          {showEmitterFooter && (company?.name || company?.address || company?.phone || company?.email) && (
+            <div className="mt-2 text-xs text-gray-600 opacity-80 border-t pt-2">
+              {[company?.name, company?.address, company?.phone, company?.email].filter(Boolean).join(' · ')}
+            </div>
+          )}
 
           <div className="mt-4 overflow-x-auto max-h-[60vh]">
             <table className="min-w-full border border-gray-200">
@@ -340,7 +552,7 @@ const InvoiceModal = ({
               <tfoot>
                 <tr className="bg-gray-50">
                   <td className="py-2 px-3 border-0" colSpan={4}>Total</td>
-                  <td className="py-2 px-3 border-0 text-right font-semibold tabular-nums">{formatInt(total)} F CFA</td>
+                  <td className="py-2 px-3 border-0 text-right font-semibold tabular-nums">{formatInt(total)}</td>
                 </tr>
               </tfoot>
             </table>

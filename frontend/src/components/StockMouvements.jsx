@@ -49,7 +49,7 @@ const COMPANY = {
   email: ENV?.VITE_COMPANY_EMAIL || "",
 };
 
-const StockMouvements = () => {
+const StockMouvements = ({ user }) => {
   const navigate = useNavigate();
 
   // États principaux
@@ -152,8 +152,6 @@ const StockMouvements = () => {
     } catch { return null; }
   }, []);
   const isUser7 = currentUserId === 7;
-  const [syncLoading, setSyncLoading] = useState(false);
-  const [syncMsg, setSyncMsg] = useState("");
 
   // Compteurs globaux (depuis la base)
   const [clientsTotal, setClientsTotal] = useState(null);
@@ -637,6 +635,7 @@ const saveEdit = async (e) => {
     client_id: editForm.client_id,
     // montant: quantite * prix, // ajoute si ton API attend ce champ
   };
+  console.log('saveEdit payload envoyé:', payload);
 
   try {
     setEditLoading(true);
@@ -869,38 +868,7 @@ const saveEdit = async (e) => {
     {pointJourLoading ? "Chargement..." : "Journal caisse"}
   </button>
 
-  {isUser7 && (
-    <button
-      className="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 disabled:opacity-50"
-      onClick={async () => {
-        if (syncLoading) return;
-        setSyncLoading(true); setSyncMsg("");
-        try {
-          // Lancer d'abord la sync des clients puis des produits
-          await api.post('/api/sync/clients', { annex: 1, user: 7 });
-          await api.post('/api/sync/produits', { annex: 1, user: 7 });
-          setSyncMsg("Mise à jour effectuée.");
-          // Rafraîchir la liste du jour (pour options locales) et si une modal est ouverte, relancer leur chargement
-          await fetchMouvementsDuJour();
-              await fetchCounts();
-          if (clientsListOpen) {
-            try { await api.get('/api/clients'); } catch {}
-          }
-          if (productsListOpen) {
-            try { await api.get('/api/designations'); } catch {}
-          }
-        } catch (e) {
-          setSyncMsg(e?.response?.data?.error || e?.message || 'Erreur de synchronisation');
-        } finally {
-          setSyncLoading(false);
-        }
-      }}
-      disabled={syncLoading}
-      type="button"
-    >
-      {syncLoading ? 'Mise à jour…' : 'Mettre à jour (source)'}
-    </button>
-  )}
+  {/* Bouton MAJ SOURCE déplacé en Header pour éviter les doublons */}
 
 
 <button
@@ -966,12 +934,13 @@ const saveEdit = async (e) => {
         lines={selectedLines}
         total={selectedTotal}
         amountInWords={amountInWords}
+        user={user}
       />
 
       {/* New list modals */}
       <ClientsListModal open={clientsListOpen} onClose={() => setClientsListOpen(false)} />
       <ProductsListModal open={productsListOpen} onClose={() => setProductsListOpen(false)} />
-      {syncMsg && <div className="text-sm text-gray-600 mt-2">{syncMsg}</div>}
+  {/* Message de MAJ SOURCE retiré (centralisé via Header) */}
 
       <DepenseModal
         open={depenseOpen}

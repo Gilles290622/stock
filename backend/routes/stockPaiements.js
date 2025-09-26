@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../config/db');
+const remotePool = require('../config/remoteDb');
 const authenticateToken = require('../middleware/auth');
 
 function normalizeId(v) {
@@ -127,6 +128,47 @@ router.post('/', authenticateToken, async (req, res) => {
       total_paye: totalPaye,
       reste_a_payer: reste
     });
+
+    // Best-effort remote replication of payment creation
+    if (remotePool) {
+      (async () => {
+        let rconn;
+        try {
+          rconn = await remotePool.getConnection();
+          await rconn.beginTransaction();
+          // Ensure mouvement exists remotely minimally
+          const [rm] = await rconn.execute('SELECT id FROM stock_mouvements WHERE id = ? AND user_id = ?', [movId, userId]);
+          if (rm.length === 0) {
+            // Try shallow insert with minimal fields from local
+            const [lm] = await pool.query(
+              `SELECT id, user_id, strftime('%Y-%m-%d', date) AS date, type, designation_id, quantite, prix, client_id, stock, stockR
+               FROM stock_mouvements WHERE id = ? AND user_id = ?`, [movId, userId]
+            );
+            const m = lm && lm[0];
+            if (m) {
+              await rconn.execute(
+                `INSERT INTO stock_mouvements (id, user_id, date, type, designation_id, quantite, prix, client_id, stock, stockR)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE date=VALUES(date)`,
+                [m.id, m.user_id, m.date, m.type, m.designation_id, m.quantite, m.prix, m.client_id, m.stock, m.stockR]
+              );
+            }
+          }
+          await rconn.execute(
+            `INSERT INTO stock_paiements (id, mouvement_id, user_id, montant, date)
+             VALUES (?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE montant=VALUES(montant), date=VALUES(date)`,
+            [ins.insertId, movId, userId, amount, isoDate]
+          );
+          await rconn.commit();
+        } catch (e) {
+          if (rconn) try { await rconn.rollback(); } catch {}
+          console.warn('Remote push (paiement create) skipped:', e?.message || e);
+        } finally {
+          if (rconn) rconn.release();
+        }
+      })();
+    }
   } catch (err) {
     if (conn) await conn.rollback();
     const msg = String(err?.message || '');
@@ -225,6 +267,26 @@ router.patch('/:id', authenticateToken, async (req, res) => {
       total_paye: totalAutres + newAmount,
       reste_a_payer: Math.max(mouvementMontant - (totalAutres + newAmount), 0)
     });
+
+    // Best-effort remote replication of payment update
+    if (remotePool) {
+      (async () => {
+        let rconn;
+        try {
+          rconn = await remotePool.getConnection();
+          await rconn.execute(
+            `INSERT INTO stock_paiements (id, mouvement_id, user_id, montant, date)
+             VALUES (?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE montant=VALUES(montant), date=VALUES(date)`,
+            [id, movId, userId, newAmount, newDate]
+          );
+        } catch (e) {
+          console.warn('Remote push (paiement update) skipped:', e?.message || e);
+        } finally {
+          if (rconn) rconn.release();
+        }
+      })();
+    }
   } catch (err) {
     if (conn) await conn.rollback();
     console.error('Erreur PATCH /stockPaiements/:id:', err && (err.stack || err));
@@ -284,6 +346,21 @@ router.delete('/:id', authenticateToken, async (req, res) => {
       total_paye: totalPaye,
       reste_a_payer: reste
     });
+
+    // Best-effort remote replication of payment delete
+    if (remotePool) {
+      (async () => {
+        let rconn;
+        try {
+          rconn = await remotePool.getConnection();
+          await rconn.execute('DELETE FROM stock_paiements WHERE id = ? AND mouvement_id = ? AND user_id = ?', [id, row.mouvement_id, userId]);
+        } catch (e) {
+          console.warn('Remote push (paiement delete) skipped:', e?.message || e);
+        } finally {
+          if (rconn) rconn.release();
+        }
+      })();
+    }
   } catch (err) {
     if (conn) await conn.rollback();
     console.error('Erreur DELETE /stockPaiements/:id:', err && (err.stack || err));

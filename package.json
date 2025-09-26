@@ -1,0 +1,13 @@
+{
+  "name": "stock-root",
+  "private": true,
+  "workspaces": ["backend", "frontend"],
+  "scripts": {
+    "build": "npm --workspace frontend run build",
+    "start:backend": "npm --workspace backend start || node backend/server.js",
+    "prod": "npm run build && node backend/server.js",
+    "pm2:start": "pm2 start pm2-ecosystem.config.js --only stock-backend",
+    "pm2:restart": "pm2 restart stock-backend",
+    "pm2:logs": "pm2 logs stock-backend --lines 200"
+  }
+}

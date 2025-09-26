@@ -168,7 +168,12 @@ async function upsertProduitsLocal(userId, rows) {
         const [exists] = await conn.execute('SELECT id FROM stock_designations WHERE user_id = ? AND LOWER(name) = LOWER(?)', [userId, name]);
         if (exists.length > 0) { skipped++; continue; }
         if (Number.isInteger(categorieCode)) {
-          await conn.execute('INSERT INTO stock_designations (user_id, name, current_stock, categorie) VALUES (?, ?, 0, ?)', [userId, name, categorieCode]);
+          try {
+            await conn.execute('INSERT INTO stock_designations (user_id, name, current_stock, categorie) VALUES (?, ?, 0, ?)', [userId, name, categorieCode]);
+          } catch (_) {
+            // Si contrainte/FK/colonne inexistante, retomber en insertion sans categorie
+            await conn.execute('INSERT INTO stock_designations (user_id, name, current_stock) VALUES (?, ?, 0)', [userId, name]);
+          }
         } else {
           await conn.execute('INSERT INTO stock_designations (user_id, name, current_stock) VALUES (?, ?, 0)', [userId, name]);
         }

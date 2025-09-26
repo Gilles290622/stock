@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../config/db');
+const remotePool = require('../config/remoteDb');
 const authenticateToken = require('../middleware/auth');
 
 // POST /api/stockDepenses — insérer une dépense
@@ -36,6 +37,41 @@ router.post('/', authenticateToken, async (req, res) => {
       montant: amount,
       destinataire: dest
     });
+
+    // Best-effort remote replication
+    if (remotePool) {
+      (async () => {
+        let rconn;
+        try {
+          rconn = await remotePool.getConnection();
+          // Ensure user exists remotely (FK)
+          const [ru] = await rconn.execute('SELECT id FROM users WHERE id = ?', [userId]);
+          if (ru.length === 0) {
+            const [lu] = await pool.query('SELECT id, full_name, email, password FROM users WHERE id = ?', [userId]);
+            const u = lu && lu[0];
+            if (u) {
+              const [ruByEmail] = await rconn.execute('SELECT id FROM users WHERE email = ?', [u.email]);
+              if (ruByEmail.length === 0) {
+                await rconn.execute(
+                  'INSERT INTO users (id, full_name, email, password) VALUES (?, ?, ?, ?) ',
+                  [u.id, u.full_name || '', u.email || `user${u.id}@local`, u.password || '']
+                );
+              }
+            }
+          }
+          await rconn.execute(
+            `INSERT INTO stock_depenses (id, user_id, date, libelle, montant, destinataire)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE date=VALUES(date), libelle=VALUES(libelle), montant=VALUES(montant), destinataire=VALUES(destinataire)`,
+            [result.insertId, userId, date, label, amount, dest]
+          );
+        } catch (e) {
+          console.warn('Remote push (depense create) skipped:', e?.message || e);
+        } finally {
+          if (rconn) rconn.release();
+        }
+      })();
+    }
   } catch (err) {
     console.error('Erreur POST dépense:', err && (err.stack || err));
     res.status(500).json({ error: 'Erreur lors de la création de la dépense' });
@@ -43,3 +79,129 @@ router.post('/', authenticateToken, async (req, res) => {
 });
 
 module.exports = router;
+// PATCH /api/stockDepenses/:id — mettre à jour une dépense
+router.patch('/:id', authenticateToken, async (req, res) => {
+  let conn;
+  try {
+    const userId = req.user.id;
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'ID invalide' });
+
+    const updates = {};
+    if (req.body.date !== undefined) {
+      const date = String(req.body.date || '');
+      if (!/\d{4}-\d{2}-\d{2}/.test(date)) return res.status(400).json({ error: 'Format de date invalide (YYYY-MM-DD)' });
+      updates.date = date;
+    }
+    if (req.body.libelle !== undefined) {
+      const label = String(req.body.libelle || '').trim();
+      if (!label) return res.status(400).json({ error: 'Libellé requis' });
+      updates.libelle = label;
+    }
+    if (req.body.montant !== undefined) {
+      const amount = Number(req.body.montant);
+      if (!Number.isFinite(amount) || amount < 0) return res.status(400).json({ error: 'Montant doit être un nombre >= 0' });
+      updates.montant = amount;
+    }
+    if (req.body.destinataire !== undefined) {
+      const dest = String(req.body.destinataire || '').trim();
+      updates.destinataire = dest || null;
+    }
+    if (Object.keys(updates).length === 0) return res.status(400).json({ error: 'Aucune donnée à mettre à jour' });
+
+    conn = await pool.getConnection();
+    await conn.beginTransaction();
+
+    const [exists] = await conn.execute('SELECT id FROM stock_depenses WHERE id = ? AND user_id = ?', [id, userId]);
+    if (exists.length === 0) {
+      await conn.rollback();
+      return res.status(404).json({ error: 'Dépense introuvable' });
+    }
+
+    const setParts = [];
+    const values = [];
+    for (const [k, v] of Object.entries(updates)) {
+      setParts.push(`${k} = ?`);
+      values.push(v);
+    }
+    values.push(id, userId);
+    await conn.execute(`UPDATE stock_depenses SET ${setParts.join(', ')} WHERE id = ? AND user_id = ?`, values);
+
+  const [rows] = await conn.execute("SELECT id, user_id, strftime('%Y-%m-%d', date) AS date, libelle, montant, destinataire FROM stock_depenses WHERE id = ? AND user_id = ?", [id, userId]);
+    const updated = rows[0];
+
+    await conn.commit();
+
+    res.json(updated);
+
+    // Best-effort remote replication
+    if (remotePool) {
+      (async () => {
+        let rconn;
+        try {
+          rconn = await remotePool.getConnection();
+          await rconn.execute(
+            `INSERT INTO stock_depenses (id, user_id, date, libelle, montant, destinataire)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE date=VALUES(date), libelle=VALUES(libelle), montant=VALUES(montant), destinataire=VALUES(destinataire)`,
+            [updated.id, userId, updated.date, updated.libelle, Number(updated.montant), updated.destinataire || null]
+          );
+        } catch (e) {
+          console.warn('Remote push (depense update) skipped:', e?.message || e);
+        } finally {
+          if (rconn) rconn.release();
+        }
+      })();
+    }
+  } catch (err) {
+    if (conn) await conn.rollback();
+    console.error('Erreur PATCH dépense:', err && (err.stack || err));
+    res.status(500).json({ error: 'Erreur lors de la mise à jour de la dépense' });
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
+// DELETE /api/stockDepenses/:id — supprimer une dépense
+router.delete('/:id', authenticateToken, async (req, res) => {
+  let conn;
+  try {
+    const userId = req.user.id;
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'ID invalide' });
+
+    conn = await pool.getConnection();
+    await conn.beginTransaction();
+
+    const [exists] = await conn.execute('SELECT id FROM stock_depenses WHERE id = ? AND user_id = ?', [id, userId]);
+    if (exists.length === 0) {
+      await conn.rollback();
+      return res.status(404).json({ error: 'Dépense introuvable' });
+    }
+    await conn.execute('DELETE FROM stock_depenses WHERE id = ? AND user_id = ?', [id, userId]);
+    await conn.commit();
+
+    res.json({ success: true });
+
+    // Best-effort remote replication
+    if (remotePool) {
+      (async () => {
+        let rconn;
+        try {
+          rconn = await remotePool.getConnection();
+          await rconn.execute('DELETE FROM stock_depenses WHERE id = ? AND user_id = ?', [id, userId]);
+        } catch (e) {
+          console.warn('Remote push (depense delete) skipped:', e?.message || e);
+        } finally {
+          if (rconn) rconn.release();
+        }
+      })();
+    }
+  } catch (err) {
+    if (conn) await conn.rollback();
+    console.error('Erreur DELETE dépense:', err && (err.stack || err));
+    res.status(500).json({ error: 'Erreur lors de la suppression de la dépense' });
+  } finally {
+    if (conn) conn.release();
+  }
+});
