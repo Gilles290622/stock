@@ -93,36 +93,52 @@ router.get('/', authenticateToken, async (req, res) => {
 router.get('/:id/releve', authenticateToken, async (req, res) => {
   const clientId = parseInt(req.params.id, 10);
   if (!clientId) return res.status(400).json({ error: "ID client invalide" });
+  const userId = req.user.id;
 
   try {
-    const [rows] = await pool.execute(
+    const [rowsRaw] = await pool.execute(
       `SELECT 
         m.id,
         m.date,
         m.type,
         d.name AS designation,
-        m.montant,
-        m.mode_paiement,
-        m.observation,
-        CASE
-          WHEN LOWER(m.type) = 'paiement' THEN -ABS(m.montant)
-          ELSE ABS(m.montant)
-        END AS balance,
-        SUM(
-          CASE
-            WHEN LOWER(m.type) = 'paiement' THEN -ABS(m.montant)
-            ELSE ABS(m.montant)
-          END
-        ) OVER (ORDER BY m.date ASC, m.id ASC) AS solde
+        m.montant
       FROM stock_mouvements m
-      LEFT JOIN stock_designations d ON m.designation_id = d.id
-      WHERE m.client_id = ?
+      LEFT JOIN stock_designations d ON m.designation_id = d.id AND d.user_id = m.user_id
+      LEFT JOIN stock_clients c ON m.client_id = c.id AND c.user_id = m.user_id
+      WHERE m.client_id = ? AND m.user_id = ?
       ORDER BY m.date ASC, m.id ASC
-      `, [clientId]
+      `,
+      [clientId, userId]
     );
-    res.json(rows);
+
+    const rows = Array.isArray(rowsRaw) ? rowsRaw : [];
+    // Calcul côté serveur pour une meilleure compatibilité (pas de window function)
+    let running = 0;
+    let out = [];
+    try {
+      out = rows.map((r) => {
+        const t = String(r.type || '').toLowerCase();
+        const amt = Math.abs(Number(r.montant || 0));
+        const balance = t === 'paiement' ? -amt : amt;
+        running += balance;
+        return { ...r, balance, solde: running };
+      });
+    } catch (e) {
+      console.error('Mapping error in /clients/:id/releve', e?.message || e, { rowsType: typeof rowsRaw });
+      out = [];
+    }
+
+    res.json(out);
   } catch (err) {
-    console.error('Erreur GET /clients/:id/releve', err?.code, err?.message || err);
+    console.error('Erreur GET /clients/:id/releve', err?.stack || err?.message || err);
+    if (String(req.query.debug || '') === '1') {
+      return res.status(500).json({
+        error: "Erreur lors de la récupération du relevé client",
+        details: err?.message || String(err),
+        stack: process.env.NODE_ENV !== 'production' ? (err?.stack || null) : undefined
+      });
+    }
     res.status(500).json({ error: "Erreur lors de la récupération du relevé client" });
   }
 });

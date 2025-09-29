@@ -172,8 +172,7 @@ export default function ClientReleveModal({ open, onClose, token }) {
                     <th className="p-2 border">Type</th>
                     <th className="p-2 border">Désignation</th>
                     <th className="p-2 border">Montant</th>
-                    <th className="p-2 border">Mode paiement</th>
-                    <th className="p-2 border">Observation</th>
+                    {/* Colonnes retirées côté backend */}
                     <th className="p-2 border">Balance</th>
                     <th className="p-2 border">Solde</th>
                   </tr>
@@ -190,8 +189,7 @@ export default function ClientReleveModal({ open, onClose, token }) {
                       <td className="p-2 border">{row.type}</td>
                       <td className="p-2 border">{row.designation || ""}</td>
                       <td className="p-2 border text-right">{row.montant?.toLocaleString()}</td>
-                      <td className="p-2 border">{row.mode_paiement || ""}</td>
-                      <td className="p-2 border">{row.observation || ""}</td>
+                      {/* Colonnes retirées */}
                       <td className="p-2 border text-right">{row.balance?.toLocaleString()}</td>
                       <td className="p-2 border text-right font-bold">{row.solde?.toLocaleString()}</td>
                     </tr>

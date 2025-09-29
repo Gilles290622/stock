@@ -17,6 +17,11 @@ frontend/.env
 
 # Uploads and generated assets
 backend/uploads/
+backend/data/*.sqlite
+backend/data/*.db
+
+# Local data folder (do not commit local databases/backups)
+data/
 
 # Local SQL setup (contains secrets, keep local only)
 backend/sql/000_setup_local.sql
