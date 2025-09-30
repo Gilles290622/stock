@@ -10,7 +10,10 @@ module.exports = {
       max_restarts: 10,
       env: {
         NODE_ENV: 'production',
-        PORT: 80
+        PORT: 80,
+        // Force local SQLite for the running API (counts and lists will reflect local DB)
+        DB_DRIVER: 'sqlite',
+        SQLITE_FILE: './data/app.sqlite'
       }
     },
     {

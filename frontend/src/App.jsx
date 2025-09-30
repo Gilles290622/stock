@@ -4,6 +4,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate } from "r
 import Header from "./components/Header";
 import Footer from "./components/Footer";
 import StockMouvements from "./components/StockMouvements";
+import AdminDashboard from "./components/admin/AdminDashboard";
 import Login from "./components/Login";
 import Register from "./components/Register";
 import Profile from "./components/Profile";
@@ -41,7 +42,7 @@ function AppContent() {
     // Puis récupérer profil complet (logo inclus)
     (async () => {
       try {
-        const { data } = await api.get('/api/me');
+  const { data } = await api.get('/api/me');
         if (data?.user) {
           if (data.user.logo) {
             try { localStorage.setItem('user_logo', data.user.logo); } catch {}
@@ -133,7 +134,11 @@ function AppContent() {
             path="/"
             element={
               <PrivateRoute>
-                <StockMouvements user={user} />
+                {user?.role === 'admin' ? (
+                  <AdminDashboard user={user} />
+                ) : (
+                  <StockMouvements user={user} />
+                )}
               </PrivateRoute>
             }
           />

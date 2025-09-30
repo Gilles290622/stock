@@ -20,12 +20,14 @@ router.get('/all', authenticateToken, async (req, res) => {
           ORDER BY name`,
         [userId, like]
       );
+      try { console.log('[log][designations.all] user=%s q="%s" count=%d ids=%j', userId, q, rows.length, rows.map(r=>r.id).slice(0,20)); } catch {}
       return res.json(rows);
     } else {
       const [rows] = await pool.execute(
         'SELECT id, name, current_stock FROM stock_designations WHERE user_id = ? ORDER BY name',
         [userId]
       );
+      try { console.log('[log][designations.all] user=%s count=%d ids(sample)=%j', userId, rows.length, rows.map(r=>r.id).slice(0,20)); } catch {}
       return res.json(rows);
     }
   } catch (err) {
@@ -46,6 +48,7 @@ router.get('/count', authenticateToken, async (req, res) => {
         [userId, like]
       );
       const count = rows && rows[0] ? (rows[0].count || rows[0].COUNT || rows[0]['COUNT(*)'] || 0) : 0;
+      try { console.log('[log][designations.count] user=%s q="%s" count=%d', userId, q, count); } catch {}
       return res.json({ count });
     } else {
       const [rows] = await pool.execute(
@@ -53,6 +56,7 @@ router.get('/count', authenticateToken, async (req, res) => {
         [userId]
       );
       const count = rows && rows[0] ? (rows[0].count || rows[0].COUNT || rows[0]['COUNT(*)'] || 0) : 0;
+      try { console.log('[log][designations.count] user=%s count=%d', userId, count); } catch {}
       return res.json({ count });
     }
   } catch (err) {
@@ -78,7 +82,7 @@ router.get('/search', authenticateToken, async (req, res) => {
         LIMIT 10`,
       [userId, like]
     );
-
+    try { console.log('[log][designations.search] user=%s q="%s" count=%d ids=%j', userId, q, rows.length, rows.map(r=>r.id)); } catch {}
     res.json(rows);
   } catch (err) {
     console.error('Erreur GET designations/search:', err?.code, err?.message || err);
@@ -94,6 +98,7 @@ router.get('/', authenticateToken, async (req, res) => {
       'SELECT id, name, current_stock FROM stock_designations WHERE user_id = ? ORDER BY name LIMIT 50',
       [userId]
     );
+    try { console.log('[log][designations.list] user=%s count=%d ids=%j', userId, rows.length, rows.map(r=>r.id)); } catch {}
     res.json(rows);
   } catch (err) {
     console.error('Erreur GET designations:', err?.code, err?.message || err);
@@ -114,6 +119,7 @@ router.get('/:id', authenticateToken, async (req, res) => {
       'SELECT id, name, current_stock FROM stock_designations WHERE id = ? AND user_id = ?',
       [id, userId]
     );
+    try { console.log('[log][designations.get] user=%s id=%s found=%s', userId, id, rows.length>0); } catch {}
     if (rows.length === 0) {
       // Ne pas révéler l'existence pour d'autres users : renvoyer 404
       return res.status(404).json({ error: "Désignation non trouvée" });
@@ -146,6 +152,7 @@ router.post('/', authenticateToken, async (req, res) => {
         [userId, name]
       );
       const payload = { id: ins.insertId, name, current_stock: 0 };
+      try { console.log('[log][designations.create] user=%s id=%s name=%j', userId, payload.id, name); } catch {}
       // Best-effort remote replication for new designation
       if (remotePool) {
         (async () => {

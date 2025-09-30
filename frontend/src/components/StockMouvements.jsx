@@ -342,6 +342,10 @@ const fetchFeed = async (value) => {
     setClientSuggestions([]);
   };
 
+  // Boutons pour afficher les listes complètes
+  const openClientsList = () => setClientsListOpen(true);
+  const openProductsList = () => setProductsListOpen(true);
+
   const handleCellKeyDown = (nextRef) => (e) => {
     if (e.key === "Enter") {
       e.preventDefault(); e.stopPropagation();

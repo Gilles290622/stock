@@ -42,7 +42,7 @@ export default function ClientsListModal({ open, onClose }) {
     setItems([]); setError(""); setLoading(true); setQ(""); setTotal(0);
     (async () => {
       try {
-        const res = await api.get("/api/clients");
+        const res = await api.get("/api/clients/all");
         setItems(Array.isArray(res.data) ? res.data : []);
       } catch (err) {
         setError(err?.response?.data?.error || "Erreur de chargement");
@@ -63,7 +63,7 @@ export default function ClientsListModal({ open, onClose }) {
         // recharger la liste par défaut
         try {
           setLoading(true); setError("");
-          const res = await api.get("/api/clients");
+          const res = await api.get("/api/clients/all");
           setItems(Array.isArray(res.data) ? res.data : []);
         } catch (err) {
           setItems([]); setError(err?.response?.data?.error || "Erreur de chargement");

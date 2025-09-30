@@ -44,6 +44,7 @@ app.use("/api", authRoutes);
 app.use("/api/stockMouvements", stockMouvementsRoutes);
 app.use("/api/designations", designationsRoutes);
 app.use("/api/clients", clientsRoutes);
+app.use('/api/admin', require('./routes/admin'));
 app.use('/api/sync', syncRoutes);
 // leave update-profile mounted if you have a dedicated route file
 app.use('/api/update-profile', require('./routes/update-profile'));

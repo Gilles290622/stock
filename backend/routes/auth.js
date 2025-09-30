@@ -190,17 +190,19 @@ function loginRateLimit(req, res, next) {
 
 // Connexion (login) - Fixé en promise-based
 router.post('/login', loginRateLimit, async (req, res) => {
-  const { identifier, password } = req.body;
-  console.log('Login request received:', { identifier });  // Log trace
+  const { identifier, password } = req.body || {};
+  console.log('[auth.login] request', { identifier: identifier || null });
   
   if (!identifier || !password) {
     return res.status(400).json({ message: "Tous les champs sont requis" });
   }
 
   try {
+    console.log('[auth.login] querying user by identifier');
     // SELECT avec JOIN pour récupérer username depuis profiles (si besoin)
     const [users] = await db.execute(
-  `SELECT u.id, u.email, u.password, u.full_name, u.entreprise, u.phone_number, u.logo, p.username
+  `SELECT u.id, u.email, u.password, u.full_name, u.entreprise, u.phone_number, u.logo,
+          p.username, p.role, p.status
          FROM users u
          LEFT JOIN profiles p ON u.id = p.user_id
         WHERE u.email = ? OR p.username = ?
@@ -208,19 +210,37 @@ router.post('/login', loginRateLimit, async (req, res) => {
       [identifier, identifier]
     );
     
-    if (users.length === 0) {
+    console.log('[auth.login] query result length =', users && users.length);
+    if (!users || users.length === 0) {
       return res.status(401).json({ message: 'Utilisateur non trouvé' });
     }
     
     const user = users[0];
-    const match = await bcrypt.compare(password, user.password);
+    console.log('[auth.login] user row fetched', { id: user.id, hasPwd: !!user.password });
+    // Guard against empty/invalid password hashes to avoid 500 errors
+    if (!user.password || typeof user.password !== 'string' || !user.password.startsWith('$2')) {
+      return res.status(401).json({ message: 'Mot de passe incorrect' });
+    }
+    let match = false;
+    try {
+      match = await bcrypt.compare(password, user.password);
+    } catch (cmpErr) {
+      console.warn('bcrypt compare error (treated as mismatch):', cmpErr?.message || cmpErr);
+      match = false;
+    }
     if (!match) {
       return res.status(401).json({ message: 'Mot de passe incorrect' });
     }
 
     const payload = { id: user.id, email: user.email, username: user.username };
-    const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '2h' });
-    console.log('Login successful for user:', user.id);
+    let token;
+    try {
+      token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '2h' });
+    } catch (signErr) {
+      console.error('[auth.login] jwt.sign error:', signErr?.message || signErr);
+      return res.status(500).json({ message: 'Erreur serveur' });
+    }
+    console.log('[auth.login] success for user:', user.id);
     const fullUser = {
       id: user.id,
       email: user.email,
@@ -229,6 +249,8 @@ router.post('/login', loginRateLimit, async (req, res) => {
   entreprise: user.entreprise || '',
       phone_number: user.phone_number || null,
       logo: user.logo || '',
+      role: user.role || 'user',
+      status: user.status || 'active'
     };
     res.json({ token, user: fullUser });
   } catch (err) {
@@ -242,7 +264,8 @@ router.get('/me', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
     const [rows] = await db.execute(
-  `SELECT u.id, u.email, u.full_name, u.entreprise, u.phone_number, u.logo, p.username
+  `SELECT u.id, u.email, u.full_name, u.entreprise, u.phone_number, u.logo,
+          p.username, p.role, p.status, p.subscription_expires, p.free_days
          FROM users u
          LEFT JOIN profiles p ON u.id = p.user_id
         WHERE u.id = ? LIMIT 1`,
@@ -258,7 +281,11 @@ router.get('/me', authenticateToken, async (req, res) => {
   full_name: u.full_name || '',
   entreprise: u.entreprise || '',
         phone_number: u.phone_number || null,
-        logo: u.logo || ''
+        logo: u.logo || '',
+        role: u.role || 'user',
+        status: u.status || 'active',
+        subscription_expires: u.subscription_expires || null,
+        free_days: (typeof u.free_days !== 'undefined' ? u.free_days : null)
       }
     });
   } catch (e) {

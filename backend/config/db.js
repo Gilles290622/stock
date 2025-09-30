@@ -7,7 +7,12 @@ if (DRIVER === 'sqlite' || DRIVER === 'sqlite3') {
   const Database = require('better-sqlite3');
   const fs = require('fs');
   const path = require('path');
-  const file = process.env.SQLITE_FILE || path.join(__dirname, '..', 'data', 'app.sqlite');
+  // Resolve SQLITE_FILE relative to backend root (.. from config/) when it's not absolute,
+  // so running from different cwd (pm2 vs scripts) points to the same file.
+  const configured = process.env.SQLITE_FILE;
+  const file = configured
+    ? (path.isAbsolute(configured) ? configured : path.resolve(path.join(__dirname, '..'), configured))
+    : path.join(__dirname, '..', 'data', 'app.sqlite');
   const dir = path.dirname(file);
   fs.mkdirSync(dir, { recursive: true });
 
@@ -51,7 +56,7 @@ if (DRIVER === 'sqlite' || DRIVER === 'sqlite3') {
         },
         async execute(sql, params = []) {
           const trimmed = sql.trim().toLowerCase();
-          if (trimmed.startsWith('select')) {
+          if (trimmed.startsWith('select') || trimmed.startsWith('pragma')) {
             const rows = db.prepare(sql).all(params);
             return [rows];
           } else {

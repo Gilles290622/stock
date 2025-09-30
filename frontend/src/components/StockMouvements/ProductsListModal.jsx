@@ -39,7 +39,7 @@ export default function ProductsListModal({ open, onClose }) {
     setItems([]); setError(""); setLoading(true); setQ(""); setTotal(0);
     (async () => {
       try {
-        const res = await api.get("/api/designations");
+        const res = await api.get("/api/designations/all");
         setItems(Array.isArray(res.data) ? res.data : []);
       } catch (err) {
         setError(err?.response?.data?.error || "Erreur de chargement");
@@ -58,7 +58,7 @@ export default function ProductsListModal({ open, onClose }) {
       if (!q.trim()) {
         try {
           setLoading(true); setError("");
-          const res = await api.get("/api/designations");
+          const res = await api.get("/api/designations/all");
           setItems(Array.isArray(res.data) ? res.data : []);
         } catch (err) {
           setItems([]); setError(err?.response?.data?.error || "Erreur de chargement");
