@@ -2,9 +2,11 @@ import React, { useEffect, useState } from 'react';
 import api from '../../api/axios';
 
 export default function AdminDashboard({ user }) {
+  const [tab, setTab] = useState('users'); // users | subscriptions | payments
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [paymentForm, setPaymentForm] = useState({ user_id: '', amount: 7000, phone: '+2250747672761' });
 
   const fetchUsers = async () => {
     setLoading(true); setError('');
@@ -30,9 +32,14 @@ export default function AdminDashboard({ user }) {
   return (
     <div className="space-y-4">
       <h1 className="text-xl font-semibold">Administration</h1>
+      <div className="flex gap-2 text-sm">
+        <button className={`px-3 py-1 rounded ${tab==='users'?'bg-indigo-600 text-white':'bg-gray-100'}`} onClick={()=>setTab('users')}>Utilisateurs</button>
+        <button className={`px-3 py-1 rounded ${tab==='subscriptions'?'bg-indigo-600 text-white':'bg-gray-100'}`} onClick={()=>setTab('subscriptions')}>Abonnements</button>
+        <button className={`px-3 py-1 rounded ${tab==='payments'?'bg-indigo-600 text-white':'bg-gray-100'}`} onClick={()=>setTab('payments')}>Paiements</button>
+      </div>
       <p className="text-sm text-gray-600">Paiement Wave: +225 0747672761 — 7000 F CFA / mois</p>
       {error && <div className="text-red-600 text-sm">{error}</div>}
-      {loading ? <div>Chargement…</div> : (
+      {tab === 'users' && (loading ? <div>Chargement…</div> : (
         <div className="overflow-x-auto">
           <table className="min-w-full border text-sm">
             <thead>
@@ -68,6 +75,38 @@ export default function AdminDashboard({ user }) {
               ))}
             </tbody>
           </table>
+        </div>
+      ))}
+      {tab === 'subscriptions' && (
+        <div className="text-sm text-gray-700">
+          <p>Depuis cette page, vous pouvez prolonger les abonnements (+1 mois) ou ajouter des jours de gratuité aux utilisateurs.</p>
+          <p className="mt-2">Utilisez les actions dans l’onglet Utilisateurs.</p>
+        </div>
+      )}
+      {tab === 'payments' && (
+        <div className="space-y-3 text-sm">
+          <div className="font-medium">Créer une intention de paiement Wave</div>
+          <div className="flex gap-2 items-end">
+            <div>
+              <label className="block text-xs">User ID</label>
+              <input className="border px-2 py-1 rounded" type="number" value={paymentForm.user_id} onChange={e=>setPaymentForm(f=>({...f, user_id:e.target.value}))} />
+            </div>
+            <div>
+              <label className="block text-xs">Montant</label>
+              <input className="border px-2 py-1 rounded" type="number" value={paymentForm.amount} onChange={e=>setPaymentForm(f=>({...f, amount:e.target.value}))} />
+            </div>
+            <div>
+              <label className="block text-xs">Téléphone</label>
+              <input className="border px-2 py-1 rounded" type="text" value={paymentForm.phone} onChange={e=>setPaymentForm(f=>({...f, phone:e.target.value}))} />
+            </div>
+            <button className="px-3 py-2 rounded bg-indigo-600 text-white" onClick={async()=>{
+              try {
+                await api.post('/api/payments/wave/initiate', { ...paymentForm, user_id: parseInt(paymentForm.user_id,10) });
+                alert('Intention créée. En attente de confirmation.');
+              } catch(e) { alert('Erreur: ' + (e?.response?.data?.error || e.message)); }
+            }}>Créer</button>
+          </div>
+          <div className="text-gray-600">Webhooks: /api/payments/wave/webhook (configurer la signature côté serveur avant prod)</div>
         </div>
       )}
     </div>

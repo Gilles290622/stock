@@ -154,14 +154,16 @@ export default function Header({ username, userLogo, userNumber, onLogout, showS
                 Admin
               </button>
             )}
-            {/* Lien profil/configuration */}
-            <button
-              className="underline font-medium hover:text-green-200"
-              onClick={() => navigate("/profile")}
-              title="Paramètres du profil"
-            >
-              Profil
-            </button>
+            {/* Lien profil/configuration (caché pour admin) */}
+            {!isAdmin && (
+              <button
+                className="underline font-medium hover:text-green-200"
+                onClick={() => navigate("/profile")}
+                title="Paramètres du profil"
+              >
+                Profil
+              </button>
+            )}
             <span className="font-medium">Session : <span className="underline">{username}</span></span>
             <button
               className="p-2 rounded-full hover:bg-green-800 focus:outline-none"

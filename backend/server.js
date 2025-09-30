@@ -14,6 +14,8 @@ const clientsRoutes = require("./routes/clients");
 const stockPaiementsRouter = require('./routes/stockPaiements');
 const syncRoutes = require('./routes/sync');
 const remotePool = require('./config/remoteDb');
+const authenticateToken = require('./middleware/auth');
+const subscriptionGuard = require('./middleware/subscription');
 
 const app = express();
 
@@ -41,11 +43,13 @@ app.use('/api/stockDepenses', require('./routes/stockDepenses'));
 app.use('/api/stockPaiements', stockPaiementsRouter);
 app.use('/api/stockFlux', require('./routes/stockFlux'));
 app.use("/api", authRoutes);
-app.use("/api/stockMouvements", stockMouvementsRoutes);
-app.use("/api/designations", designationsRoutes);
-app.use("/api/clients", clientsRoutes);
+// Apply subscription guard for non-admins on sales-related routes
+app.use("/api/stockMouvements", authenticateToken, subscriptionGuard, stockMouvementsRoutes);
+app.use("/api/designations", authenticateToken, subscriptionGuard, designationsRoutes);
+app.use("/api/clients", authenticateToken, subscriptionGuard, clientsRoutes);
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api/sync', syncRoutes);
+app.use('/api/payments', require('./routes/payments'));
 // leave update-profile mounted if you have a dedicated route file
 app.use('/api/update-profile', require('./routes/update-profile'));
 app.use('/api/entreprise', require('./routes/entreprise'));
