@@ -118,6 +118,8 @@ function AppContent() {
         onLogout={handleLogout}
         showSync={true}
         userId={user?.id}
+        role={user?.role}
+        entreprise={user?.entreprise}
       />
       {showUpdateBanner && (
         <div className="bg-yellow-100 border-b border-yellow-300 text-yellow-800 text-sm flex items-center justify-between px-4 py-2">
@@ -135,10 +137,18 @@ function AppContent() {
             element={
               <PrivateRoute>
                 {user?.role === 'admin' ? (
-                  <AdminDashboard user={user} />
+                  <Navigate to="/admin" />
                 ) : (
                   <StockMouvements user={user} />
                 )}
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path="/admin"
+            element={
+              <PrivateRoute>
+                <AdminDashboard user={user} />
               </PrivateRoute>
             }
           />

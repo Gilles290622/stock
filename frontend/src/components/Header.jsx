@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import api from "../api/axios";
 import { pushAll, pullAllSource } from '../api/sync';
 
-export default function Header({ username, userLogo, userNumber, onLogout, showSync = true, userId, entreprise: initialEntreprise, onEntrepriseChange }) {
+export default function Header({ username, userLogo, userNumber, onLogout, showSync = true, userId, role, entreprise: initialEntreprise, onEntrepriseChange }) {
   const navigate = useNavigate();
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState('');
@@ -64,8 +64,9 @@ export default function Header({ username, userLogo, userNumber, onLogout, showS
     }
   }
 
+  const isAdmin = role === 'admin';
   return (
-    <header className="bg-green-700 text-white py-4 px-8 flex justify-between items-center shadow">
+    <header className={`${isAdmin ? 'bg-indigo-700' : 'bg-green-700'} text-white py-4 px-8 flex justify-between items-center shadow`}>
       <div className="flex items-center gap-4">
         {/* Logo utilisateur */}
         <img
@@ -73,7 +74,7 @@ export default function Header({ username, userLogo, userNumber, onLogout, showS
           alt="Avatar utilisateur"
           className="h-10 w-10 rounded-full border object-cover"
         />
-        <div className="font-bold text-2xl tracking-wide">Gestion de stock</div>
+        <div className="font-bold text-2xl tracking-wide">{isAdmin ? 'Administration' : 'Gestion de stock'}</div>
         {username && (
           <div className="ml-2">
             {!editingEnt && (
@@ -123,7 +124,7 @@ export default function Header({ username, userLogo, userNumber, onLogout, showS
       <div className="flex items-center gap-4">
         {username ? (
           <>
-            {showSync && (
+            {!isAdmin && showSync && (
               <button
                 className={`px-3 py-2 rounded shadow ${syncing ? 'bg-gray-300 cursor-not-allowed' : 'bg-white text-green-700 hover:bg-green-50'}`}
                 onClick={handleSyncAll}
@@ -133,8 +134,8 @@ export default function Header({ username, userLogo, userNumber, onLogout, showS
                 {syncing ? 'Synchronisation…' : 'Synchroniser'}
               </button>
             )}
-            {/* MAJ SOURCE - visible uniquement pour l'utilisateur 7 */}
-            {Number(userId) === 7 && (
+            {/* MAJ SOURCE - visible uniquement pour l'utilisateur 7 et non admin */}
+            {!isAdmin && Number(userId) === 7 && (
               <button
                 className={`px-3 py-2 rounded shadow ${pulling ? 'bg-gray-300 cursor-not-allowed' : 'bg-white text-green-700 hover:bg-green-50'}`}
                 onClick={handlePullAll}
@@ -142,6 +143,15 @@ export default function Header({ username, userLogo, userNumber, onLogout, showS
                 title="Importer clients + produits depuis la SOURCE (structure-elmorijah.com)"
               >
                 {pulling ? 'MAJ SOURCE…' : 'MAJ SOURCE'}
+              </button>
+            )}
+            {isAdmin && (
+              <button
+                className="px-3 py-2 rounded shadow bg-white text-indigo-700 hover:bg-indigo-50"
+                onClick={() => navigate('/admin')}
+                title="Espace administration"
+              >
+                Admin
               </button>
             )}
             {/* Lien profil/configuration */}
