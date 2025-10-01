@@ -2,6 +2,7 @@
   Démarre l'application via PM2 au logon utilisateur.
   - Tente pm2 resurrect si une sauvegarde existe (pm2 save)
   - Sinon démarre via pm2-ecosystem.config.js (backend sur port 80)
+  - Le frontend est servi statiquement par le backend (frontend/dist), pas de Vite preview
   - Exécute en fenêtre cachée si lancé via le Planificateur de tâches
 #>
 
@@ -22,15 +23,15 @@ try {
     Write-Host '[autostart] Utilisation de pm2: ' $pm2Cmd
     # Essaye de restaurer les process sauvegardés
     try { pm2 resurrect | Out-Null } catch {}
-    # Si rien ne tourne, démarre le backend défini dans l\'ecosystem
+    # Vérifie si le backend tourne, sinon démarre via l'ecosystem
     $list = pm2 list | Out-String
     if ($list -notmatch 'stock-backend') {
-      pm2 start pm2-ecosystem.config.js --only stock-backend --update-env | Out-Null
+      pm2 start pm2-ecosystem.config.js --update-env | Out-Null
     } else {
       # Assure que le backend est en ligne
-      pm2 restart stock-backend --update-env | Out-Null
+      try { pm2 restart stock-backend --update-env | Out-Null } catch {}
     }
-    # Sauvegarde l\'état pour les prochains boots
+    # Sauvegarde l'état pour les prochains boots
     try { pm2 save | Out-Null } catch {}
   } else {
     # Fallback: lancer directement Node si pm2 indisponible

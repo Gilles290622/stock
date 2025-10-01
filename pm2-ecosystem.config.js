@@ -16,16 +16,7 @@ module.exports = {
         SQLITE_FILE: './data/app.sqlite'
       }
     },
-    {
-      name: 'stock-frontend',
-      cwd: './frontend',
-      script: 'node_modules/vite/bin/vite.js',
-      args: 'preview',
-      watch: false,
-      autorestart: true,
-      env: {
-        NODE_ENV: 'production'
-      }
-    }
+    // Frontend is served statically by the backend from frontend/dist.
+    // Remove separate Vite preview to avoid exposing localhost:4173.
   ]
 };

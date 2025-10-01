@@ -36,14 +36,14 @@ Le projet Vite est configuré avec un proxy vers `http://localhost:3001` pour `/
 - Dev: http://localhost:5173/stock
 
 ### 4) Déploiement
-- La base Vite est `/stock/` (vite.config.js) et le Router utilise `basename="/stock"`. Servez le frontend sous ce chemin ou ajustez `vite.config.js` et `App.jsx`.
-- Servez le dossier `backend/uploads` en statique (déjà géré par le serveur Express).
 
 ### 5) Notes importantes
-- Les appels API utilisent des chemins relatifs `/api/...` et une instance axios qui ajoute automatiquement le header `Authorization: Bearer <token>`.
-- Pour la mise à jour du profil et l’upload du logo, l’authentification est requise.
-- Les tables MySQL fournies sont un schéma minimal basé sur le code; adaptez les colonnes/contrôles à vos besoins.
+
+## Synchronisation automatique au démarrage
+
+- À l’ouverture de l’application (utilisateur connecté non-admin), une synchronisation vers la base distante démarre automatiquement.
+- Un écran de chargement pleine page affiche la progression, basée sur un flux SSE.
+- Endpoint SSE: `GET /api/sync/push/progress` (auth via `?token=...`)
+- Étapes poussées: `categories`, `clients`, `designations`, `mouvements`, `paiements`, `depenses`.
 
 ### 6) Dépendances clés
-- Backend: express@5, mysql2, bcrypt, jsonwebtoken, multer, cors, dotenv
-- Frontend: react, vite, tailwindcss, @mui/material, @heroicons/react, axios

@@ -628,3 +628,71 @@ router.post('/push/:entity', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
+
+// GET /api/sync/push/progress -> SSE pour suivre la progression de la synchro (push -> distant)
+router.get('/push/progress', authenticateToken, async (req, res) => {
+  try {
+    if (!remotePool) {
+      res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+      res.flushHeaders?.();
+      res.write(`event: done\n`);
+      res.write(`data: ${JSON.stringify({ success: false, reason: 'remote_disabled' })}\n\n`);
+      return res.end();
+    }
+    const userId = req.user.id;
+    res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+    res.flushHeaders?.();
+
+    const send = (event, data) => {
+      try { res.write(`event: ${event}\n` + `data: ${JSON.stringify(data)}\n\n`); } catch {}
+    };
+
+    let closed = false;
+    req.on('close', () => { closed = true; });
+
+    const steps = [
+      { key: 'categories', fn: async (r) => { return await pushCategories(r); } },
+      { key: 'clients', fn: async (r) => { return await pushClients(userId, r); } },
+      { key: 'designations', fn: async (r) => { return await pushDesignations(userId, r); } },
+      { key: 'mouvements', fn: async (r) => { return await pushMouvements(userId, r); } },
+      { key: 'paiements', fn: async (r) => { return await pushPaiements(userId, r); } },
+      { key: 'depenses', fn: async (r) => { return await pushDepenses(userId, r); } },
+    ];
+
+    send('start', { user: userId, steps: steps.map(s => s.key) });
+
+    const rconn = await remotePool.getConnection();
+    try {
+      await upsertRemoteUser(rconn, userId);
+      for (let i = 0; i < steps.length; i++) {
+        if (closed) break;
+        const s = steps[i];
+        send('progress', { step: s.key, status: 'running', index: i, total: steps.length, percent: Math.round((i / steps.length) * 100) });
+        try {
+          await rconn.beginTransaction();
+          const count = await s.fn(rconn);
+          await rconn.commit();
+          const percent = Math.round(((i + 1) / steps.length) * 100);
+          send('progress', { step: s.key, status: 'done', count, index: i + 1, total: steps.length, percent });
+        } catch (e) {
+          try { await rconn.rollback(); } catch {}
+          send('error', { step: s.key, message: e?.message || String(e) });
+          // on arrête à la première erreur
+          break;
+        }
+      }
+      send('done', { success: true });
+    } finally {
+      rconn.release();
+      res.end();
+    }
+  } catch (err) {
+    try {
+      res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+      res.flushHeaders?.();
+      res.write(`event: error\n`);
+      res.write(`data: ${JSON.stringify({ message: err?.message || String(err) })}\n\n`);
+    } catch {}
+    try { res.end(); } catch {}
+  }
+});

@@ -9,6 +9,7 @@ import Login from "./components/Login";
 import Register from "./components/Register";
 import Profile from "./components/Profile";
 import ProfileSettings from "./components/ProfileSettings";
+import FullScreenLoader from "./components/FullScreenLoader";
 
 // Simule la récupération du user depuis le token/localStorage
 function getUserFromToken(token) {
@@ -32,6 +33,7 @@ function AppContent() {
   const [appVersion, setAppVersion] = useState(null);
   const [serverVersion, setServerVersion] = useState(null);
   const [showUpdateBanner, setShowUpdateBanner] = useState(false);
+  const [autoSync, setAutoSync] = useState({ running: false, percent: 0, detail: '' });
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -54,6 +56,44 @@ function AppContent() {
       }
     })();
   }, []);
+
+  // Auto-sync on app open (non-admin only): stream progress via SSE
+  useEffect(() => {
+    if (!user || user.role === 'admin') return;
+    let aborted = false;
+    let es;
+    async function start() {
+      try {
+        setAutoSync({ running: true, percent: 0, detail: 'Initialisation…' });
+        // Build authenticated SSE URL with token (Authorization headers aren’t supported by native EventSource)
+        const t = localStorage.getItem('token');
+        const url = `/api/sync/push/progress?token=${encodeURIComponent(t)}`;
+        es = new EventSource(url);
+        es.addEventListener('start', (e) => {
+          try { const d = JSON.parse(e.data); setAutoSync({ running: true, percent: 0, detail: 'Démarrage…' }); } catch {}
+        });
+        es.addEventListener('progress', (e) => {
+          try {
+            const d = JSON.parse(e.data);
+            const label = d.step ? String(d.step) : '';
+            setAutoSync({ running: true, percent: Number(d.percent || 0), detail: label });
+          } catch {}
+        });
+        es.addEventListener('error', (e) => {
+          setAutoSync(prev => ({ ...prev, detail: 'Erreur de synchronisation' }));
+        });
+        es.addEventListener('done', (e) => {
+          setAutoSync({ running: false, percent: 100, detail: 'Terminé' });
+          try { es?.close(); } catch {}
+        });
+      } catch {
+        setAutoSync({ running: false, percent: 0, detail: '' });
+        try { es?.close(); } catch {}
+      }
+    }
+    start();
+    return () => { aborted = true; try { es?.close(); } catch {} };
+  }, [user?.id, user?.role]);
 
   // Version polling (toutes les 5 minutes)
   useEffect(() => {
@@ -111,6 +151,9 @@ function AppContent() {
 
   return (
     <div className="min-h-screen flex flex-col bg-white">
+      {autoSync.running && (
+        <FullScreenLoader title="Synchronisation avec la base distante" percent={autoSync.percent} detail={autoSync.detail} />
+      )}
       <Header
         username={user?.username}
         userLogo={user?.logo}

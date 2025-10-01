@@ -14,7 +14,6 @@ const clientsRoutes = require("./routes/clients");
 const stockPaiementsRouter = require('./routes/stockPaiements');
 const syncRoutes = require('./routes/sync');
 const remotePool = require('./config/remoteDb');
-const authenticateToken = require('./middleware/auth');
 const subscriptionGuard = require('./middleware/subscription');
 
 const app = express();
