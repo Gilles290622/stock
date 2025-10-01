@@ -651,12 +651,12 @@ router.get('/push/progress', authenticateToken, async (req, res) => {
     req.on('close', () => { closed = true; });
 
     const steps = [
-      { key: 'categories', fn: async (r) => { return await pushCategories(r); } },
-      { key: 'clients', fn: async (r) => { return await pushClients(userId, r); } },
-      { key: 'designations', fn: async (r) => { return await pushDesignations(userId, r); } },
-      { key: 'mouvements', fn: async (r) => { return await pushMouvements(userId, r); } },
-      { key: 'paiements', fn: async (r) => { return await pushPaiements(userId, r); } },
-      { key: 'depenses', fn: async (r) => { return await pushDepenses(userId, r); } },
+      { key: 'categories', label: 'Catégories', fn: async (r) => ({ sent: await pushCategories(r) }) },
+      { key: 'clients', label: 'Clients', fn: async (r) => ({ sent: await pushClients(userId, r) }) },
+      { key: 'designations', label: 'Produits', fn: async (r) => ({ sent: await pushDesignations(userId, r) }) },
+      { key: 'mouvements', label: 'Mouvements', fn: async (r) => ({ sent: await pushMouvements(userId, r) }) },
+      { key: 'paiements', label: 'Paiements', fn: async (r) => ({ sent: await pushPaiements(userId, r) }) },
+      { key: 'depenses', label: 'Dépenses', fn: async (r) => ({ sent: await pushDepenses(userId, r) }) },
     ];
 
     send('start', { user: userId, steps: steps.map(s => s.key) });
@@ -667,19 +667,34 @@ router.get('/push/progress', authenticateToken, async (req, res) => {
       for (let i = 0; i < steps.length; i++) {
         if (closed) break;
         const s = steps[i];
-        send('progress', { step: s.key, status: 'running', index: i, total: steps.length, percent: Math.round((i / steps.length) * 100) });
-        try {
-          await rconn.beginTransaction();
-          const count = await s.fn(rconn);
-          await rconn.commit();
-          const percent = Math.round(((i + 1) / steps.length) * 100);
-          send('progress', { step: s.key, status: 'done', count, index: i + 1, total: steps.length, percent });
-        } catch (e) {
-          try { await rconn.rollback(); } catch {}
-          send('error', { step: s.key, message: e?.message || String(e) });
-          // on arrête à la première erreur
-          break;
+        send('progress', { step: s.key, label: s.label, status: 'running', index: i, total: steps.length, percent: Math.round((i / steps.length) * 100) });
+        const maxRetry = 2;
+        let attempt = 0;
+        let lastErr = null;
+        while (attempt <= maxRetry) {
+          try {
+            await rconn.beginTransaction();
+            const result = await s.fn(rconn);
+            await rconn.commit();
+            const percent = Math.round(((i + 1) / steps.length) * 100);
+            send('progress', { step: s.key, label: s.label, status: 'done', result, index: i + 1, total: steps.length, percent, message: `${s.label}: ${result.sent ?? 0} envoyés` });
+            lastErr = null;
+            break;
+          } catch (e) {
+            try { await rconn.rollback(); } catch {}
+            lastErr = e;
+            if (attempt < maxRetry) {
+              send('progress', { step: s.key, label: s.label, status: 'retry', attempt: attempt + 1, maxRetry: maxRetry + 1, message: `Réessai ${attempt + 1}/${maxRetry + 1}…` });
+              await new Promise(res => setTimeout(res, 800));
+              attempt++;
+              continue;
+            } else {
+              send('error', { step: s.key, label: s.label, message: e?.message || String(e) });
+              break;
+            }
+          }
         }
+        if (lastErr) break;
       }
       send('done', { success: true });
     } finally {

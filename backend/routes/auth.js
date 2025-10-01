@@ -265,7 +265,7 @@ router.get('/me', authenticateToken, async (req, res) => {
     const userId = req.user.id;
     const [rows] = await db.execute(
   `SELECT u.id, u.email, u.full_name, u.entreprise, u.phone_number, u.logo,
-          p.username, p.role, p.status, p.subscription_expires, p.free_days
+    p.username, p.role, p.status, p.subscription_expires, p.free_days, p.auto_sync
          FROM users u
          LEFT JOIN profiles p ON u.id = p.user_id
         WHERE u.id = ? LIMIT 1`,
@@ -285,7 +285,8 @@ router.get('/me', authenticateToken, async (req, res) => {
         role: u.role || 'user',
         status: u.status || 'active',
         subscription_expires: u.subscription_expires || null,
-        free_days: (typeof u.free_days !== 'undefined' ? u.free_days : null)
+        free_days: (typeof u.free_days !== 'undefined' ? u.free_days : null),
+        auto_sync: (typeof u.auto_sync !== 'undefined' ? !!u.auto_sync : true)
       }
     });
   } catch (e) {

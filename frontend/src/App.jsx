@@ -60,9 +60,12 @@ function AppContent() {
     })();
   }, []);
 
-  // Auto-sync on app open (non-admin only): stream progress via SSE
+  // Auto-sync on app open (for all roles if enabled by preference): stream progress via SSE
   useEffect(() => {
-    if (!user || user.role === 'admin') return;
+    if (!user) return;
+    // Respect user preference (default to true if undefined)
+    const shouldAuto = typeof user.auto_sync === 'undefined' ? true : !!user.auto_sync;
+    if (!shouldAuto) return;
     let aborted = false;
     let es;
     async function start() {
@@ -78,7 +81,7 @@ function AppContent() {
         es.addEventListener('progress', (e) => {
           try {
             const d = JSON.parse(e.data);
-            const label = d.step ? String(d.step) : '';
+            const label = d.message || (d.label || d.step || '');
             setAutoSync({ running: true, percent: Number(d.percent || 0), detail: label });
           } catch {}
         });
@@ -96,7 +99,7 @@ function AppContent() {
     }
     start();
     return () => { aborted = true; try { es?.close(); } catch {} };
-  }, [user?.id, user?.role]);
+  }, [user?.id, user?.role, user?.auto_sync]);
 
   // Version polling (toutes les 5 minutes)
   useEffect(() => {

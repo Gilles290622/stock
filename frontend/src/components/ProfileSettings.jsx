@@ -6,6 +6,7 @@ export default function ProfileSettings({ user, onUpdate }) {
   const [entreprise, setEntreprise] = useState(user.entreprise || "");
   const [phoneNumber, setPhoneNumber] = useState(user.phone_number || "");
   const [logo, setLogo] = useState(user.logo || "");
+  const [autoSync, setAutoSync] = useState(typeof user.auto_sync !== 'undefined' ? !!user.auto_sync : true);
   const [file, setFile] = useState(null);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -43,10 +44,11 @@ export default function ProfileSettings({ user, onUpdate }) {
         entreprise: entreprise,
         phone_number: phoneNumber,
         logo: logoUrl,
+        auto_sync: autoSync,
       });
 
       setSuccess("Profil mis à jour !");
-  if (onUpdate) onUpdate({ ...user, full_name: fullName, entreprise, phone_number: phoneNumber, logo: logoUrl });
+  if (onUpdate) onUpdate({ ...user, full_name: fullName, entreprise, phone_number: phoneNumber, logo: logoUrl, auto_sync: autoSync });
     } catch (err) {
       const msg = err?.response?.data?.error || "Erreur lors de la mise à jour";
       setError(msg);
@@ -119,6 +121,12 @@ export default function ProfileSettings({ user, onUpdate }) {
           Enregistrer
         </button>
       </form>
+      <div className="mt-6 border-t pt-4">
+        <label className="inline-flex items-center gap-2">
+          <input type="checkbox" className="h-4 w-4" checked={autoSync} onChange={e => setAutoSync(e.target.checked)} />
+          <span>Synchronisation automatique au démarrage</span>
+        </label>
+      </div>
     </div>
   );
 }

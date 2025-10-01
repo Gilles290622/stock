@@ -1,0 +1,1 @@
+ALTER TABLE profiles ADD COLUMN auto_sync TINYINT(1) DEFAULT 1;

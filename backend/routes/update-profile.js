@@ -10,7 +10,7 @@ const authenticateToken = require('../middleware/auth');
 router.post('/', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
-  const { full_name, phone_number, logo, entreprise } = req.body;
+  const { full_name, phone_number, logo, entreprise, auto_sync } = req.body;
 
     if (!full_name || typeof full_name !== 'string') {
       return res.status(400).json({ error: 'Nom invalide' });
@@ -20,9 +20,15 @@ router.post('/', authenticateToken, async (req, res) => {
       `UPDATE users SET full_name = ?, entreprise = COALESCE(?, entreprise), phone_number = ?, logo = ? WHERE id = ?`,
       [full_name, entreprise || null, phone_number || null, logo || null, userId]
     );
+    if (typeof auto_sync !== 'undefined') {
+      await pool.execute(
+        `UPDATE profiles SET auto_sync = ? WHERE user_id = ?`,
+        [auto_sync ? 1 : 0, userId]
+      );
+    }
 
     const [rows] = await pool.execute(
-      `SELECT u.id, u.email, u.full_name, u.entreprise, u.phone_number, u.logo, p.username, p.role, p.status
+      `SELECT u.id, u.email, u.full_name, u.entreprise, u.phone_number, u.logo, p.username, p.role, p.status, p.auto_sync
          FROM users u
          LEFT JOIN profiles p ON u.id = p.user_id
         WHERE u.id = ?`,
