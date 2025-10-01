@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import pkg from '../package.json';
 import api from './api/axios';
 import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate } from "react-router-dom";
 import Header from "./components/Header";
@@ -34,6 +35,8 @@ function AppContent() {
   const [serverVersion, setServerVersion] = useState(null);
   const [showUpdateBanner, setShowUpdateBanner] = useState(false);
   const [autoSync, setAutoSync] = useState({ running: false, percent: 0, detail: '' });
+  const [needImmediateReload, setNeedImmediateReload] = useState(false);
+  const BUILD_VERSION = pkg.version;
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -102,10 +105,29 @@ function AppContent() {
       try {
         const { data } = await api.get('/api/version');
         if (!stopped) {
-          if (initial) setAppVersion(data.version);
-          setServerVersion(data.version);
-          if (!initial && appVersion && data.version && data.version !== appVersion) {
+          if (initial) {
+            // Utilise la version du build front embarquée pour comparaison
+            setAppVersion(BUILD_VERSION);
+            setServerVersion(data.version);
+            if (data.version && data.version !== BUILD_VERSION) {
+              // Admin: recharge immédiate; sinon, bannière
+              if (user?.role === 'admin') {
+                applyUpdateNow(data.version);
+              } else {
+                setShowUpdateBanner(true);
+                // si l'utilisateur n'est pas encore chargé (cas où user est null), on déclenchera plus tard pour admin
+                if (!user) setNeedImmediateReload(true);
+              }
+            }
+          } else {
+            setServerVersion(data.version);
+            if (appVersion && data.version && data.version !== appVersion) {
             setShowUpdateBanner(true);
+            // Si admin connecté, recharge immédiatement
+            if (user?.role === 'admin') {
+              applyUpdateNow(data.version);
+            }
+          }
           }
         }
       } catch {/* ignore */}
@@ -113,12 +135,20 @@ function AppContent() {
     fetchVersion(true);
     const id = setInterval(fetchVersion, 5 * 60 * 1000);
     return () => { stopped = true; clearInterval(id); };
-  }, [appVersion]);
+  }, [appVersion, user?.role]);
 
-  function applyUpdateNow() {
-    // Force reload (cache-bust via hash build)
-    window.location.reload();
+  function applyUpdateNow(ver) {
+    // Reload avec cache-busting pour garantir la dernière version servie
+    const v = ver || serverVersion || Date.now();
+    window.location.assign(`/?v=${encodeURIComponent(v)}`);
   }
+  // Si l'on découvre après coup que l'utilisateur est admin et qu'une MAJ est dispo, recharger
+  useEffect(() => {
+    if (needImmediateReload && user?.role === 'admin' && serverVersion && BUILD_VERSION && serverVersion !== BUILD_VERSION) {
+      applyUpdateNow(serverVersion);
+      setNeedImmediateReload(false);
+    }
+  }, [needImmediateReload, user?.role, serverVersion]);
 
   const handleLogout = () => {
     localStorage.removeItem("token");
