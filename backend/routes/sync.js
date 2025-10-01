@@ -541,6 +541,246 @@ router.post('/push/mouvement/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// =====================
+// PULL (remote -> local)
+// =====================
+
+async function ensureLocalUser(conn, userId) {
+  const [u] = await conn.query('SELECT id FROM users WHERE id = ? LIMIT 1', [userId]);
+  if (!u || u.length === 0) {
+    await conn.query('INSERT INTO users (id, full_name, email, password) VALUES (?, ?, ?, ?)', [userId, `User ${userId}`, `user${userId}@local`, '']);
+  }
+}
+
+async function pullCategoriesFromRemote(lconn, rconn) {
+  const [rows] = await rconn.query('SELECT id, name FROM stock_categories ORDER BY id ASC');
+  await lconn.beginTransaction();
+  try {
+    await lconn.query('DELETE FROM stock_categories');
+    for (const c of rows) {
+      await lconn.query('INSERT INTO stock_categories (id, name) VALUES (?, ?)', [c.id, c.name]);
+    }
+    await lconn.commit();
+    return rows.length;
+  } catch (e) { await lconn.rollback(); throw e; }
+}
+
+async function pullClientsFromRemote(userId, lconn, rconn) {
+  const [rows] = await rconn.query('SELECT id, user_id, name, address, phone, email FROM stock_clients WHERE user_id = ? ORDER BY id ASC', [userId]);
+  await ensureLocalUser(lconn, userId);
+  await lconn.beginTransaction();
+  try {
+    await lconn.query('DELETE FROM stock_clients WHERE user_id = ?', [userId]);
+    for (const c of rows) {
+      await lconn.query('INSERT INTO stock_clients (id, user_id, name, address, phone, email) VALUES (?, ?, ?, ?, ?, ?)', [c.id, userId, c.name, c.address || null, c.phone || null, c.email || null]);
+    }
+    await lconn.commit();
+    return rows.length;
+  } catch (e) { await lconn.rollback(); throw e; }
+}
+
+async function pullDesignationsFromRemote(userId, lconn, rconn) {
+  const [rows] = await rconn.query('SELECT id, user_id, name, current_stock, categorie FROM stock_designations WHERE user_id = ? ORDER BY id ASC', [userId]);
+  await ensureLocalUser(lconn, userId);
+  await lconn.beginTransaction();
+  try {
+    await lconn.query('DELETE FROM stock_designations WHERE user_id = ?', [userId]);
+    for (const d of rows) {
+      await lconn.query('INSERT INTO stock_designations (id, user_id, name, current_stock, categorie) VALUES (?, ?, ?, ?, ?)', [d.id, userId, d.name, Number(d.current_stock || 0), d.categorie || null]);
+    }
+    await lconn.commit();
+    return rows.length;
+  } catch (e) { await lconn.rollback(); throw e; }
+}
+
+async function pullMouvementsFromRemote(userId, lconn, rconn) {
+  const [rows] = await rconn.query(`SELECT id, user_id, DATE_FORMAT(date,'%Y-%m-%d') as date, type, designation_id, quantite, prix, client_id, stock, stockR FROM stock_mouvements WHERE user_id = ? ORDER BY id ASC`, [userId]);
+  await ensureLocalUser(lconn, userId);
+  await lconn.beginTransaction();
+  try {
+    await lconn.query('DELETE FROM stock_mouvements WHERE user_id = ?', [userId]);
+    for (const m of rows) {
+      await lconn.query(
+        'INSERT INTO stock_mouvements (id, user_id, date, type, designation_id, quantite, prix, client_id, stock, stockR) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [m.id, userId, m.date, m.type, m.designation_id || null, Number(m.quantite||0), Number(m.prix||0), m.client_id || null, Number(m.stock||0), Number(m.stockR||0)]
+      );
+    }
+    await lconn.commit();
+    return rows.length;
+  } catch (e) { await lconn.rollback(); throw e; }
+}
+
+async function pullPaiementsFromRemote(userId, lconn, rconn) {
+  const [rows] = await rconn.query(`SELECT id, mouvement_id, user_id, montant, DATE_FORMAT(date,'%Y-%m-%d') as date FROM stock_paiements WHERE (user_id = ? OR user_id IS NULL) ORDER BY id ASC`, [userId]);
+  await lconn.beginTransaction();
+  try {
+    await lconn.query('DELETE FROM stock_paiements WHERE user_id = ? OR user_id IS NULL', [userId]);
+    for (const p of rows) {
+      await lconn.query('INSERT INTO stock_paiements (id, mouvement_id, user_id, montant, date) VALUES (?, ?, ?, ?, ?)', [p.id, p.mouvement_id, p.user_id || null, Number(p.montant||0), p.date]);
+    }
+    await lconn.commit();
+    return rows.length;
+  } catch (e) { await lconn.rollback(); throw e; }
+}
+
+async function pullDepensesFromRemote(userId, lconn, rconn) {
+  const [rows] = await rconn.query(`SELECT id, user_id, DATE_FORMAT(date,'%Y-%m-%d') as date, libelle, montant, destinataire FROM stock_depenses WHERE user_id = ? ORDER BY id ASC`, [userId]);
+  await lconn.beginTransaction();
+  try {
+    await lconn.query('DELETE FROM stock_depenses WHERE user_id = ?', [userId]);
+    for (const d of rows) {
+      await lconn.query('INSERT INTO stock_depenses (id, user_id, date, libelle, montant, destinataire) VALUES (?, ?, ?, ?, ?, ?)', [d.id, userId, d.date, d.libelle, Number(d.montant||0), d.destinataire || null]);
+    }
+    await lconn.commit();
+    return rows.length;
+  } catch (e) { await lconn.rollback(); throw e; }
+}
+
+// GET /api/sync/pull-general/progress -> synchro distante -> locale (toutes tables pertinentes) pour l'utilisateur courant (plus catégories)
+router.get('/pull-general/progress', authenticateToken, async (req, res) => {
+  try {
+    if (!remotePool) {
+      res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+      res.flushHeaders?.();
+      res.write(`event: done\n`);
+      res.write(`data: ${JSON.stringify({ success: false, reason: 'remote_disabled' })}\n\n`);
+      return res.end();
+    }
+    const userId = req.user.id;
+    res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+    res.flushHeaders?.();
+    const send = (event, data) => { try { res.write(`event: ${event}\n` + `data: ${JSON.stringify(data)}\n\n`); } catch {} };
+    let closed = false; req.on('close', () => { closed = true; });
+
+    // Helpers for full tables (users, profiles, subscriptions_payments)
+    async function pullUsersAll(l, r) {
+      let rows;
+      try {
+        [rows] = await r.query('SELECT id, full_name, entreprise, email, password, phone_number, logo FROM users ORDER BY id ASC');
+      } catch (e) {
+        // Fallback without entreprise if missing remotely
+        [rows] = await r.query('SELECT id, full_name, email, password, phone_number, logo FROM users ORDER BY id ASC');
+        rows = rows.map(u => ({ ...u, entreprise: null }));
+      }
+      await l.beginTransaction();
+      try {
+        await l.query('DELETE FROM users');
+        for (const u of rows) {
+          await l.query('INSERT INTO users (id, full_name, entreprise, email, password, phone_number, logo) VALUES (?, ?, ?, ?, ?, ?, ?)', [u.id, u.full_name || '', u.entreprise || null, u.email || '', u.password || '', u.phone_number || null, u.logo || null]);
+        }
+        await l.commit();
+        return rows.length;
+      } catch (e) { await l.rollback(); throw e; }
+    }
+    async function pullProfilesAll(l, r) {
+      let rows;
+      try {
+        [rows] = await r.query('SELECT id, user_id, username, role, status, subscription_expires, free_days, auto_sync FROM profiles ORDER BY id ASC');
+      } catch (e) {
+        try {
+          [rows] = await r.query('SELECT id, user_id, username, role, status, subscription_expires, free_days FROM profiles ORDER BY id ASC');
+          rows = rows.map(p => ({ ...p, auto_sync: 1 }));
+        } catch (e2) {
+          [rows] = await r.query('SELECT id, user_id, username, role, status FROM profiles ORDER BY id ASC');
+          rows = rows.map(p => ({ ...p, subscription_expires: null, free_days: 0, auto_sync: 1 }));
+        }
+      }
+      await l.beginTransaction();
+      try {
+        await l.query('DELETE FROM profiles');
+        for (const p of rows) {
+          await l.query('INSERT INTO profiles (id, user_id, username, role, status) VALUES (?, ?, ?, ?, ?)', [p.id, p.user_id, p.username || null, p.role || 'user', p.status || 'pending']);
+          // best-effort for extra columns
+          if (typeof p.subscription_expires !== 'undefined') {
+            await l.query('UPDATE profiles SET subscription_expires = ? WHERE id = ?', [p.subscription_expires || null, p.id]);
+          }
+          if (typeof p.free_days !== 'undefined') {
+            await l.query('UPDATE profiles SET free_days = ? WHERE id = ?', [Number(p.free_days) || 0, p.id]);
+          }
+          if (typeof p.auto_sync !== 'undefined') {
+            await l.query('UPDATE profiles SET auto_sync = ? WHERE id = ?', [p.auto_sync ? 1 : 0, p.id]);
+          }
+        }
+        await l.commit();
+        return rows.length;
+      } catch (e) { await l.rollback(); throw e; }
+    }
+    async function pullSubscriptionsPaymentsAll(l, r) {
+      let rows;
+      try {
+        [rows] = await r.query('SELECT id, user_id, amount, currency, phone, provider, reference, status, created_at FROM subscriptions_payments ORDER BY id ASC');
+      } catch (e) {
+        // table may not exist remotely
+        return 0;
+      }
+      await l.beginTransaction();
+      try {
+        await l.query('DELETE FROM subscriptions_payments');
+        for (const sp of rows) {
+          await l.query('INSERT INTO subscriptions_payments (id, user_id, amount, currency, phone, provider, reference, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [sp.id, sp.user_id, Number(sp.amount)||0, sp.currency || 'XOF', sp.phone || null, sp.provider || 'wave', sp.reference || null, sp.status || 'pending', sp.created_at || null]);
+        }
+        await l.commit();
+        return rows.length;
+      } catch (e) { await l.rollback(); throw e; }
+    }
+
+    const steps = [
+      { key: 'users', label: 'Utilisateurs', fn: async (l, r) => ({ pulled: await pullUsersAll(l, r) }) },
+      { key: 'profiles', label: 'Profils', fn: async (l, r) => ({ pulled: await pullProfilesAll(l, r) }) },
+      { key: 'subscriptions', label: 'Abonnements (paiements)', fn: async (l, r) => ({ pulled: await pullSubscriptionsPaymentsAll(l, r) }) },
+      { key: 'categories', label: 'Catégories', fn: async (l, r) => ({ pulled: await pullCategoriesFromRemote(l, r) }) },
+      { key: 'clients', label: 'Clients', fn: async (l, r) => ({ pulled: await pullClientsFromRemote(userId, l, r) }) },
+      { key: 'designations', label: 'Produits', fn: async (l, r) => ({ pulled: await pullDesignationsFromRemote(userId, l, r) }) },
+      { key: 'mouvements', label: 'Mouvements', fn: async (l, r) => ({ pulled: await pullMouvementsFromRemote(userId, l, r) }) },
+      { key: 'paiements', label: 'Paiements', fn: async (l, r) => ({ pulled: await pullPaiementsFromRemote(userId, l, r) }) },
+      { key: 'depenses', label: 'Dépenses', fn: async (l, r) => ({ pulled: await pullDepensesFromRemote(userId, l, r) }) },
+    ];
+
+    send('start', { user: userId, steps: steps.map(s => s.key) });
+    const rconn = await remotePool.getConnection();
+    const lconn = await pool.getConnection();
+    try {
+      for (let i = 0; i < steps.length; i++) {
+        if (closed) break;
+        const s = steps[i];
+        send('progress', { step: s.key, label: s.label, status: 'running', index: i, total: steps.length, percent: Math.round((i / steps.length) * 100) });
+        const maxRetry = 2; let attempt = 0; let lastErr = null;
+        while (attempt <= maxRetry) {
+          try {
+            const result = await s.fn(lconn, rconn);
+            const percent = Math.round(((i + 1) / steps.length) * 100);
+            send('progress', { step: s.key, label: s.label, status: 'done', result, index: i + 1, total: steps.length, percent, message: `${s.label}: ${result.pulled ?? 0} importés` });
+            lastErr = null; break;
+          } catch (e) {
+            lastErr = e;
+            if (attempt < maxRetry) {
+              send('progress', { step: s.key, label: s.label, status: 'retry', attempt: attempt + 1, maxRetry: maxRetry + 1, message: `Réessai ${attempt + 1}/${maxRetry + 1}…` });
+              await new Promise(r => setTimeout(r, 800)); attempt++; continue;
+            } else {
+              send('error', { step: s.key, label: s.label, message: e?.message || String(e) });
+              break;
+            }
+          }
+        }
+        if (lastErr) break;
+      }
+      send('done', { success: true });
+    } finally {
+      try { lconn.release(); } catch {}
+      try { rconn.release(); } catch {}
+      res.end();
+    }
+  } catch (err) {
+    try {
+      res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+      res.flushHeaders?.();
+      res.write(`event: error\n`);
+      res.write(`data: ${JSON.stringify({ message: err?.message || String(err) })}\n\n`);
+    } catch {}
+    try { res.end(); } catch {}
+  }
+});
+
 // GET /api/sync/check/mouvement/:id -> verify that a mouvement exists on remote for this user
 router.get('/check/mouvement/:id', authenticateToken, async (req, res) => {
   try {

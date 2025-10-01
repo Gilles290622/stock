@@ -35,6 +35,7 @@ function AppContent() {
   const [serverVersion, setServerVersion] = useState(null);
   const [showUpdateBanner, setShowUpdateBanner] = useState(false);
   const [autoSync, setAutoSync] = useState({ running: false, percent: 0, detail: '' });
+  const [autoPull, setAutoPull] = useState({ running: false, percent: 0, detail: '' });
   const [needImmediateReload, setNeedImmediateReload] = useState(false);
   const BUILD_VERSION = pkg.version;
   const navigate = useNavigate();
@@ -60,12 +61,41 @@ function AppContent() {
     })();
   }, []);
 
-  // Auto-sync on app open (for all roles if enabled by preference): stream progress via SSE
+  // Auto-PULL général avant le PUSH
+  useEffect(() => {
+    if (!user) return;
+    const shouldAuto = typeof user.auto_sync === 'undefined' ? true : !!user.auto_sync;
+    if (!shouldAuto) return;
+    let es;
+    const t = localStorage.getItem('token');
+    const url = `/api/sync/pull-general/progress?token=${encodeURIComponent(t)}`;
+    setAutoPull({ running: true, percent: 0, detail: 'Initialisation de la mise à jour locale…' });
+    try {
+      es = new EventSource(url);
+      es.addEventListener('start', () => setAutoPull({ running: true, percent: 0, detail: 'Démarrage…' }));
+      es.addEventListener('progress', (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          const label = d.message || (d.label || d.step || '');
+          setAutoPull({ running: true, percent: Number(d.percent || 0), detail: label });
+        } catch {}
+      });
+      es.addEventListener('error', () => setAutoPull(prev => ({ ...prev, detail: 'Erreur de mise à jour locale' })));
+      es.addEventListener('done', () => { setAutoPull({ running: false, percent: 100, detail: 'Terminé' }); try { es?.close(); } catch {} });
+    } catch {
+      setAutoPull({ running: false, percent: 0, detail: '' });
+      try { es?.close(); } catch {}
+    }
+    return () => { try { es?.close(); } catch {} };
+  }, [user?.id, user?.auto_sync]);
+
+  // Auto-sync on app open (for all roles if enabled by preference): stream progress via SSE (lancé après PULL)
   useEffect(() => {
     if (!user) return;
     // Respect user preference (default to true if undefined)
     const shouldAuto = typeof user.auto_sync === 'undefined' ? true : !!user.auto_sync;
     if (!shouldAuto) return;
+    if (autoPull.running) return;
     let aborted = false;
     let es;
     async function start() {
@@ -97,9 +127,9 @@ function AppContent() {
         try { es?.close(); } catch {}
       }
     }
-    start();
-    return () => { aborted = true; try { es?.close(); } catch {} };
-  }, [user?.id, user?.role, user?.auto_sync]);
+    const to = setTimeout(() => start(), 250);
+    return () => { aborted = true; clearTimeout(to); try { es?.close(); } catch {} };
+  }, [user?.id, user?.role, user?.auto_sync, autoPull.running]);
 
   // Version polling (toutes les 5 minutes)
   useEffect(() => {
@@ -184,8 +214,8 @@ function AppContent() {
 
   return (
     <div className="min-h-screen flex flex-col bg-white">
-      {autoSync.running && (
-        <FullScreenLoader title="Synchronisation avec la base distante" percent={autoSync.percent} detail={autoSync.detail} />
+      {(autoPull.running || autoSync.running) && (
+        <FullScreenLoader title="Synchronisation avec la base distante" percent={autoSync.running ? autoSync.percent : autoPull.percent} detail={autoSync.running ? autoSync.detail : autoPull.detail} />
       )}
       <Header
         username={user?.username}
