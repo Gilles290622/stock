@@ -19,9 +19,23 @@ async function requireAdmin(req, res, next) {
 router.get('/users', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const [rows] = await db.execute(
-      `SELECT u.id, u.full_name, u.email, p.username, p.role, p.status, p.subscription_expires, p.free_days
-       FROM users u LEFT JOIN profiles p ON u.id = p.user_id
-       ORDER BY u.id ASC`
+      `SELECT u.id, u.full_name, u.email,
+              p.username, p.role, p.status, p.subscription_expires, p.free_days,
+              COALESCE(cc.cnt, 0) AS clients_count,
+              COALESCE(dd.cnt, 0) AS designations_count,
+              COALESCE(mm.cnt, 0) AS mouvements_count
+         FROM users u
+    LEFT JOIN profiles p ON u.id = p.user_id
+    LEFT JOIN (
+               SELECT user_id, COUNT(*) AS cnt FROM stock_clients GROUP BY user_id
+              ) cc ON cc.user_id = u.id
+    LEFT JOIN (
+               SELECT user_id, COUNT(*) AS cnt FROM stock_designations GROUP BY user_id
+              ) dd ON dd.user_id = u.id
+    LEFT JOIN (
+               SELECT user_id, COUNT(*) AS cnt FROM stock_mouvements GROUP BY user_id
+              ) mm ON mm.user_id = u.id
+        ORDER BY u.id ASC`
     );
     res.json(rows);
   } catch (e) {

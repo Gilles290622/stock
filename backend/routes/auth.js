@@ -5,6 +5,7 @@ const jwt = require('jsonwebtoken');
 const db = require('../config/db');
 const remotePool = require('../config/remoteDb');
 const authenticateToken = require('../middleware/auth');
+const crypto = require('crypto');
 
 // Inscription (register) - Adapté au schéma : users (full_name, email, password) + profiles (username, etc.)
 router.post('/register', async (req, res) => {
@@ -296,3 +297,49 @@ router.get('/me', authenticateToken, async (req, res) => {
 });
 
 module.exports = router;
+// --- Password reset minimal implementation ---
+// POST /api/auth/reset-password/init { identifier }
+router.post('/auth/reset-password/init', async (req, res) => {
+  try {
+    const { identifier } = req.body || {};
+    if (!identifier) return res.status(400).json({ message: 'Identifiant requis' });
+    const [rows] = await db.execute(
+      `SELECT u.id FROM users u LEFT JOIN profiles p ON u.id = p.user_id WHERE u.email = ? OR p.username = ? LIMIT 1`,
+      [identifier, identifier]
+    );
+    if (!rows.length) return res.status(404).json({ message: 'Utilisateur introuvable' });
+    const userId = rows[0].id;
+    const code = crypto.randomBytes(3).toString('hex');
+    // stocker le code temporaire dans profiles.auto_sync colonne? mieux: utilisez un champ dédié si disponible; à défaut, exploiter free_days comme vecteur n’est pas souhaitable. On utilise ici status pour y placer un code prefixé sans casser l’état.
+    const [p] = await db.execute('SELECT status FROM profiles WHERE user_id = ? LIMIT 1', [userId]);
+    const oldStatus = (p.length && p[0].status) ? String(p[0].status) : 'active';
+    const nextStatus = `reset:${code}:${oldStatus}`.slice(0, 190);
+    await db.execute('UPDATE profiles SET status = ? WHERE user_id = ?', [nextStatus, userId]);
+    // En prod: envoyer email/SMS; ici, on renvoie le code pour test
+    return res.json({ message: 'Code de réinitialisation généré', code, user_id: userId });
+  } catch (e) { return res.status(500).json({ message: 'Erreur serveur' }); }
+});
+
+// POST /api/auth/reset-password/complete { identifier, code, new_password }
+router.post('/auth/reset-password/complete', async (req, res) => {
+  try {
+    const { identifier, code, new_password } = req.body || {};
+    if (!identifier || !code || !new_password) return res.status(400).json({ message: 'Champs requis' });
+    const [rows] = await db.execute(
+      `SELECT u.id FROM users u LEFT JOIN profiles p ON u.id = p.user_id WHERE u.email = ? OR p.username = ? LIMIT 1`,
+      [identifier, identifier]
+    );
+    if (!rows.length) return res.status(404).json({ message: 'Utilisateur introuvable' });
+    const userId = rows[0].id;
+    const [p] = await db.execute('SELECT status FROM profiles WHERE user_id = ? LIMIT 1', [userId]);
+    const status = p.length ? String(p[0].status || '') : '';
+    const m = status.match(/^reset:([0-9a-fA-F]{6}):(.{0,180})$/);
+    if (!m || m[1] !== code) return res.status(400).json({ message: 'Code invalide' });
+    if (String(new_password).length < 6) return res.status(400).json({ message: 'Mot de passe trop court' });
+    const hash = await require('bcrypt').hash(new_password, 10);
+    await db.execute('UPDATE users SET password = ? WHERE id = ?', [hash, userId]);
+    // restaurer l’ancien status
+    await db.execute('UPDATE profiles SET status = ? WHERE user_id = ?', [m[2] || 'active', userId]);
+    return res.json({ success: true });
+  } catch (e) { return res.status(500).json({ message: 'Erreur serveur' }); }
+});

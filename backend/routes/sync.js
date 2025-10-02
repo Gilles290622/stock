@@ -658,15 +658,40 @@ router.get('/pull-general/progress', authenticateToken, async (req, res) => {
       try {
         [rows] = await r.query('SELECT id, full_name, entreprise, email, password, phone_number, logo FROM users ORDER BY id ASC');
       } catch (e) {
-        // Fallback without entreprise if missing remotely
+        // Fallback sans colonne entreprise
         [rows] = await r.query('SELECT id, full_name, email, password, phone_number, logo FROM users ORDER BY id ASC');
         rows = rows.map(u => ({ ...u, entreprise: null }));
       }
+      const adminIds = (process.env.ADMIN_IDS || '1,7').split(',').map(s => s.trim());
       await l.beginTransaction();
       try {
-        await l.query('DELETE FROM users');
         for (const u of rows) {
-          await l.query('INSERT INTO users (id, full_name, entreprise, email, password, phone_number, logo) VALUES (?, ?, ?, ?, ?, ?, ?)', [u.id, u.full_name || '', u.entreprise || null, u.email || '', u.password || '', u.phone_number || null, u.logo || null]);
+          const uid = String(u.id);
+          const [loc] = await l.query('SELECT id, password FROM users WHERE id = ? LIMIT 1', [u.id]);
+          const localHashed = loc?.length ? String(loc[0].password || '') : '';
+          const remoteHashed = String(u.password || '');
+          // Stratégie: ne JAMAIS écraser le password local des admins; sinon, garder le local s'il semble valide ($2...)
+          let passwordToSet;
+          if (loc && loc.length) {
+            if (adminIds.includes(uid)) {
+              passwordToSet = localHashed; // préserver admin local
+            } else if (localHashed && localHashed.startsWith('$2')) {
+              passwordToSet = localHashed; // garder hash local valide
+            } else {
+              passwordToSet = remoteHashed || localHashed || '';
+            }
+            await l.query(
+              'UPDATE users SET full_name = ?, entreprise = ?, email = ?, password = ?, phone_number = ?, logo = ? WHERE id = ?',
+              [u.full_name || '', u.entreprise || null, u.email || '', passwordToSet, u.phone_number || null, u.logo || null, u.id]
+            );
+          } else {
+            // Insertion nouvelle: utiliser le hash distant si fourni
+            passwordToSet = remoteHashed || '';
+            await l.query(
+              'INSERT INTO users (id, full_name, entreprise, email, password, phone_number, logo) VALUES (?, ?, ?, ?, ?, ?, ?)',
+              [u.id, u.full_name || '', u.entreprise || null, u.email || '', passwordToSet, u.phone_number || null, u.logo || null]
+            );
+          }
         }
         await l.commit();
         return rows.length;
@@ -687,18 +712,31 @@ router.get('/pull-general/progress', authenticateToken, async (req, res) => {
       }
       await l.beginTransaction();
       try {
-        await l.query('DELETE FROM profiles');
         for (const p of rows) {
-          await l.query('INSERT INTO profiles (id, user_id, username, role, status) VALUES (?, ?, ?, ?, ?)', [p.id, p.user_id, p.username || null, p.role || 'user', p.status || 'pending']);
-          // best-effort for extra columns
-          if (typeof p.subscription_expires !== 'undefined') {
-            await l.query('UPDATE profiles SET subscription_expires = ? WHERE id = ?', [p.subscription_expires || null, p.id]);
+          // Chercher par id puis par user_id pour éviter les doublons
+          const [locById] = await l.query('SELECT id, user_id, role, status, subscription_expires, free_days, auto_sync FROM profiles WHERE id = ? LIMIT 1', [p.id]);
+          let targetId = p.id;
+          if (!locById || locById.length === 0) {
+            const [locByUser] = await l.query('SELECT id, user_id, role, status, subscription_expires, free_days, auto_sync FROM profiles WHERE user_id = ? LIMIT 1', [p.user_id]);
+            if (locByUser && locByUser.length) {
+              targetId = locByUser[0].id;
+            }
           }
-          if (typeof p.free_days !== 'undefined') {
-            await l.query('UPDATE profiles SET free_days = ? WHERE id = ?', [Number(p.free_days) || 0, p.id]);
-          }
-          if (typeof p.auto_sync !== 'undefined') {
-            await l.query('UPDATE profiles SET auto_sync = ? WHERE id = ?', [p.auto_sync ? 1 : 0, p.id]);
+
+          const [loc] = await l.query('SELECT id, user_id, role, status, subscription_expires, free_days, auto_sync FROM profiles WHERE id = ? LIMIT 1', [targetId]);
+          const merged = {
+            username: p.username || (loc && loc[0]?.username) || null,
+            role: p.role || (loc && loc[0]?.role) || 'user',
+            status: p.status || (loc && loc[0]?.status) || 'active',
+            subscription_expires: (typeof p.subscription_expires !== 'undefined') ? (p.subscription_expires || null) : (loc && loc[0]?.subscription_expires) || null,
+            free_days: Math.max(Number(p.free_days)||0, Number(loc && loc[0]?.free_days || 0)),
+            auto_sync: (typeof p.auto_sync !== 'undefined') ? (p.auto_sync ? 1 : 0) : (loc && loc[0]?.auto_sync ? 1 : 0)
+          };
+
+          if (loc && loc.length) {
+            await l.query('UPDATE profiles SET user_id = ?, username = ?, role = ?, status = ?, subscription_expires = ?, free_days = ?, auto_sync = ? WHERE id = ?', [p.user_id, merged.username, merged.role, merged.status, merged.subscription_expires, merged.free_days, merged.auto_sync, targetId]);
+          } else {
+            await l.query('INSERT INTO profiles (id, user_id, username, role, status, subscription_expires, free_days, auto_sync) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [p.id, p.user_id, merged.username, merged.role, merged.status, merged.subscription_expires, merged.free_days, merged.auto_sync]);
           }
         }
         await l.commit();

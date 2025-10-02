@@ -36,6 +36,7 @@ export default function AdminDashboard({ user }) {
         <button className={`px-3 py-1 rounded ${tab==='users'?'bg-indigo-600 text-white':'bg-gray-100'}`} onClick={()=>setTab('users')}>Utilisateurs</button>
         <button className={`px-3 py-1 rounded ${tab==='subscriptions'?'bg-indigo-600 text-white':'bg-gray-100'}`} onClick={()=>setTab('subscriptions')}>Abonnements</button>
         <button className={`px-3 py-1 rounded ${tab==='payments'?'bg-indigo-600 text-white':'bg-gray-100'}`} onClick={()=>setTab('payments')}>Paiements</button>
+        <button className="px-3 py-1 rounded bg-gray-100" onClick={fetchUsers}>Rafraîchir</button>
       </div>
       <p className="text-sm text-gray-600">Paiement Wave: +225 0747672761 — 7000 F CFA / mois</p>
       {error && <div className="text-red-600 text-sm">{error}</div>}
@@ -52,6 +53,9 @@ export default function AdminDashboard({ user }) {
                 <th className="p-2 border">Statut</th>
                 <th className="p-2 border">Expire</th>
                 <th className="p-2 border">Free days</th>
+                <th className="p-2 border">Clients</th>
+                <th className="p-2 border">Désignations</th>
+                <th className="p-2 border">Mouvements</th>
                 <th className="p-2 border">Actions</th>
               </tr>
             </thead>
@@ -66,6 +70,9 @@ export default function AdminDashboard({ user }) {
                   <td className="p-2 border">{u.status}</td>
                   <td className="p-2 border">{u.subscription_expires || '-'}</td>
                   <td className="p-2 border">{u.free_days ?? 0}</td>
+                  <td className="p-2 border">{u.clients_count ?? 0}</td>
+                  <td className="p-2 border">{u.designations_count ?? 0}</td>
+                  <td className="p-2 border">{u.mouvements_count ?? 0}</td>
                   <td className="p-2 border space-x-2">
                     <button className="px-2 py-1 bg-red-600 text-white rounded" onClick={() => revoke(u.id)}>Révoquer</button>
                     <button className="px-2 py-1 bg-blue-600 text-white rounded" onClick={() => addMonth(u.id)}>+1 mois</button>

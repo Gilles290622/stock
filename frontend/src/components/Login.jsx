@@ -5,6 +5,9 @@ export default function Login({ onLogin }) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [resetOpen, setResetOpen] = useState(false);
+  const [resetIdentifier, setResetIdentifier] = useState("");
+  const [resetMsg, setResetMsg] = useState("");
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -58,6 +61,7 @@ export default function Login({ onLogin }) {
             required
             autoComplete="current-password"
           />
+          <div className="text-right mt-1"><button type="button" className="text-xs text-green-700 hover:underline" onClick={()=>{ setResetOpen(true); setResetIdentifier(identifier); setResetMsg(''); }}>Mot de passe oublié ?</button></div>
         </div>
         <button
           type="submit"
@@ -72,6 +76,31 @@ export default function Login({ onLogin }) {
           </a>
         </div>
       </form>
+      {resetOpen && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg p-5 w-full max-w-md">
+            <div className="text-lg font-semibold mb-2">Réinitialiser le mot de passe</div>
+            {resetMsg && <div className="text-sm mb-2 text-green-700">{resetMsg}</div>}
+            <div className="mb-3">
+              <label className="block text-sm mb-1">Email ou nom d'utilisateur</label>
+              <input className="w-full border rounded px-3 py-2" value={resetIdentifier} onChange={e=>setResetIdentifier(e.target.value)} placeholder="ex: jtservices@local ou Jtservices" />
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button className="px-3 py-2 bg-gray-100 rounded" onClick={()=>setResetOpen(false)}>Annuler</button>
+              <button className="px-3 py-2 bg-green-700 text-white rounded" onClick={async()=>{
+                try {
+                  const res = await fetch('/api/auth/reset-password/init', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identifier: resetIdentifier }) });
+                  const data = await res.json();
+                  if (res.ok) setResetMsg(data.message || 'Lien/code de réinitialisation envoyé.');
+                  else setResetMsg(data.message || 'Impossible de démarrer la réinitialisation.');
+                } catch {
+                  setResetMsg('Erreur serveur');
+                }
+              }}>Envoyer le lien/code</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

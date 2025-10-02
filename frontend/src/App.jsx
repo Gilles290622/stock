@@ -66,8 +66,9 @@ function AppContent() {
     if (!user) return;
     const shouldAuto = typeof user.auto_sync === 'undefined' ? true : !!user.auto_sync;
     if (!shouldAuto) return;
-    let es;
     const t = localStorage.getItem('token');
+    if (!t) return; // pas de token => pas de SSE
+    let es;
     const url = `/api/sync/pull-general/progress?token=${encodeURIComponent(t)}`;
     setAutoPull({ running: true, percent: 0, detail: 'Initialisation de la mise à jour locale…' });
     try {
@@ -96,13 +97,14 @@ function AppContent() {
     const shouldAuto = typeof user.auto_sync === 'undefined' ? true : !!user.auto_sync;
     if (!shouldAuto) return;
     if (autoPull.running) return;
+    const t = localStorage.getItem('token');
+    if (!t) return; // pas de token
     let aborted = false;
     let es;
     async function start() {
       try {
         setAutoSync({ running: true, percent: 0, detail: 'Initialisation…' });
         // Build authenticated SSE URL with token (Authorization headers aren’t supported by native EventSource)
-        const t = localStorage.getItem('token');
         const url = `/api/sync/push/progress?token=${encodeURIComponent(t)}`;
         es = new EventSource(url);
         es.addEventListener('start', (e) => {
@@ -131,44 +133,39 @@ function AppContent() {
     return () => { aborted = true; clearTimeout(to); try { es?.close(); } catch {} };
   }, [user?.id, user?.role, user?.auto_sync, autoPull.running]);
 
-  // Version polling (toutes les 5 minutes)
+  // Version polling (toutes les 5 minutes) — évite les boucles de reload
   useEffect(() => {
     let stopped = false;
     async function fetchVersion(initial = false) {
       try {
         const { data } = await api.get('/api/version');
-        if (!stopped) {
-          if (initial) {
-            // Utilise la version du build front embarquée pour comparaison
-            setAppVersion(BUILD_VERSION);
-            setServerVersion(data.version);
-            if (data.version && data.version !== BUILD_VERSION) {
-              // Admin: recharge immédiate; sinon, bannière
-              if (user?.role === 'admin') {
-                applyUpdateNow(data.version);
-              } else {
-                setShowUpdateBanner(true);
-                // si l'utilisateur n'est pas encore chargé (cas où user est null), on déclenchera plus tard pour admin
-                if (!user) setNeedImmediateReload(true);
-              }
-            }
-          } else {
-            setServerVersion(data.version);
-            if (appVersion && data.version && data.version !== appVersion) {
-            setShowUpdateBanner(true);
-            // Si admin connecté, recharge immédiatement
-            if (user?.role === 'admin') {
-              applyUpdateNow(data.version);
-            }
+        if (stopped) return;
+        const serverVer = data?.version || null;
+        if (initial) setAppVersion(BUILD_VERSION);
+        setServerVersion(serverVer);
+        if (!serverVer) return;
+        const lastServer = (typeof localStorage !== 'undefined') ? localStorage.getItem('last_server_version') : null;
+        const changed = !lastServer || lastServer !== serverVer;
+        if (changed) {
+          try { localStorage.setItem('last_server_version', serverVer); } catch {}
+          // Admin: rechargement unique par session pour appliquer la nouvelle version
+          const isAdmin = user?.role === 'admin';
+          const reloadDone = (typeof sessionStorage !== 'undefined') && sessionStorage.getItem('versionReloadDone') === '1';
+          if (isAdmin && !reloadDone) {
+            try { sessionStorage.setItem('versionReloadDone', '1'); } catch {}
+            applyUpdateNow(serverVer);
+            return;
           }
-          }
+          // Autres rôles: afficher une bannière
+          setShowUpdateBanner(true);
+          if (!user && isAdmin) setNeedImmediateReload(true);
         }
-      } catch {/* ignore */}
+      } catch { /* ignore */ }
     }
     fetchVersion(true);
-    const id = setInterval(fetchVersion, 5 * 60 * 1000);
+    const id = setInterval(() => fetchVersion(false), 5 * 60 * 1000);
     return () => { stopped = true; clearInterval(id); };
-  }, [appVersion, user?.role]);
+  }, [user?.role]);
 
   function applyUpdateNow(ver) {
     // Reload avec cache-busting pour garantir la dernière version servie
