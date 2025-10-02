@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
 const authenticateToken = require('../middleware/auth');
+const crypto = require('crypto');
 
 // Simple admin guard: role=admin in profiles
 async function requireAdmin(req, res, next) {
@@ -104,3 +105,17 @@ router.post('/payments/wave', authenticateToken, requireAdmin, async (req, res) 
 });
 
 module.exports = router;
+
+// POST /api/admin/users/:id/reset-password-init -> admin déclenche un code de réinit
+router.post('/users/:id/reset-password-init', authenticateToken, requireAdmin, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!id) return res.status(400).json({ error: 'ID invalide' });
+  try {
+    const code = crypto.randomBytes(3).toString('hex');
+    const expires = new Date(Date.now() + 15 * 60 * 1000);
+    const iso = expires.toISOString().slice(0, 19).replace('T', ' ');
+    await db.execute('DELETE FROM password_resets WHERE user_id = ?', [id]);
+    await db.execute('INSERT INTO password_resets (user_id, code, expires_at) VALUES (?, ?, ?)', [id, code, iso]);
+    return res.json({ success: true, code, expires_at: iso });
+  } catch (e) { return res.status(500).json({ error: 'Erreur serveur' }); }
+});

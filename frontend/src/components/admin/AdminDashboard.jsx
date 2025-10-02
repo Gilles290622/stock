@@ -7,6 +7,19 @@ export default function AdminDashboard({ user }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [paymentForm, setPaymentForm] = useState({ user_id: '', amount: 7000, phone: '+2250747672761' });
+  const fmtDate = (s) => {
+    if (!s) return '-';
+    const d = new Date(s.replace(' ', 'T'));
+    if (isNaN(d)) return s;
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+  const isExpired = (s) => {
+    if (!s) return true;
+    const d = new Date(s.replace(' ', 'T'));
+    if (isNaN(d)) return false;
+    return d < new Date();
+  };
 
   const fetchUsers = async () => {
     setLoading(true); setError('');
@@ -68,7 +81,7 @@ export default function AdminDashboard({ user }) {
                   <td className="p-2 border">{u.username}</td>
                   <td className="p-2 border">{u.role}</td>
                   <td className="p-2 border">{u.status}</td>
-                  <td className="p-2 border">{u.subscription_expires || '-'}</td>
+                  <td className={`p-2 border ${isExpired(u.subscription_expires) ? 'text-red-600' : 'text-green-700'}`}>{fmtDate(u.subscription_expires)}</td>
                   <td className="p-2 border">{u.free_days ?? 0}</td>
                   <td className="p-2 border">{u.clients_count ?? 0}</td>
                   <td className="p-2 border">{u.designations_count ?? 0}</td>
@@ -77,6 +90,10 @@ export default function AdminDashboard({ user }) {
                     <button className="px-2 py-1 bg-red-600 text-white rounded" onClick={() => revoke(u.id)}>Révoquer</button>
                     <button className="px-2 py-1 bg-blue-600 text-white rounded" onClick={() => addMonth(u.id)}>+1 mois</button>
                     <button className="px-2 py-1 bg-green-600 text-white rounded" onClick={() => addFreeDays(u.id, 7)}>+7 jours</button>
+                    <button className="px-2 py-1 bg-amber-600 text-white rounded" onClick={async()=>{
+                      try { const { data } = await api.post(`/api/admin/users/${u.id}/reset-password-init`); alert(`Code: ${data.code} (expire ${data.expires_at})`); }
+                      catch(e){ alert('Erreur envoi code'); }
+                    }}>Réinit. MDP</button>
                   </td>
                 </tr>
               ))}

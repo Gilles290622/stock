@@ -126,6 +126,16 @@ export default function ProfileSettings({ user, onUpdate }) {
           <input type="checkbox" className="h-4 w-4" checked={autoSync} onChange={e => setAutoSync(e.target.checked)} />
           <span>Synchronisation automatique au démarrage</span>
         </label>
+        <div className="mt-4">
+          <button className="bg-indigo-600 text-white px-4 py-2 rounded" onClick={async()=>{
+            try {
+              const { data } = await api.post('/api/payments/wave/initiate/self', { amount: 7000 });
+              alert(`Paiement initié. Référence: ${data.reference}. Suivez les instructions Wave.`);
+            } catch (e) {
+              alert('Impossible de démarrer le paiement');
+            }
+          }}>Payer abonnement (7000 F CFA)</button>
+        </div>
       </div>
     </div>
   );

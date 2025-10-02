@@ -59,4 +59,24 @@ router.post('/wave/webhook', express.json(), async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'Erreur serveur' }); }
 });
 
+// User-side: initiate a Wave payment intent for self
+router.post('/wave/initiate/self', authenticateToken, async (req, res) => {
+  try {
+    const user_id = req.user.id;
+    const { amount = 7000, currency = 'XOF', phone } = req.body || {};
+    // fallback phone: from profile if available
+    let phoneRes = phone;
+    if (!phoneRes) {
+      try { const [p] = await db.execute('SELECT phone_number FROM users WHERE id = ? LIMIT 1', [user_id]); phoneRes = p.length ? (p[0].phone_number || '+2250747672761') : '+2250747672761'; } catch { phoneRes = '+2250747672761'; }
+    }
+    const intent = await createPaymentIntent({ amount, currency, phone: phoneRes });
+    await db.execute(
+      `INSERT INTO subscriptions_payments (user_id, amount, currency, phone, provider, reference, status)
+       VALUES (?, ?, ?, ?, 'wave', ?, 'pending')`,
+      [user_id, parseInt(amount, 10), currency, phoneRes, intent.reference]
+    );
+    res.json({ success: true, reference: intent.reference });
+  } catch (e) { res.status(500).json({ error: 'Erreur serveur' }); }
+});
+
 module.exports = router;
