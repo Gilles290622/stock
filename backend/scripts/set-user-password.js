@@ -38,9 +38,10 @@ function parseArgs() {
     // Upsert profile
     const [p] = await conn.query('SELECT user_id FROM profiles WHERE user_id = ?', [id]);
     if (p.length === 0) {
-      await conn.query('INSERT INTO profiles (user_id, role, status, username) VALUES (?, ?, ?, ?)', [id, 'user', 'active', username]);
+      await conn.query('INSERT INTO profiles (user_id, role, status, username, free_days) VALUES (?, ?, ?, ?, ?)', [id, 'user', 'active', username, 7]);
     } else {
-      await conn.query('UPDATE profiles SET username = COALESCE(?, username), role = COALESCE(role, ?), status = COALESCE(status, ?) WHERE user_id = ?', [username, 'user', 'active', id]);
+      // Ensure at least 7 free days once
+      await conn.query('UPDATE profiles SET username = COALESCE(?, username), role = COALESCE(role, ?), status = COALESCE(status, ?), free_days = CASE WHEN COALESCE(free_days,0) < 1 THEN 7 ELSE free_days END WHERE user_id = ?', [username, 'user', 'active', id]);
     }
 
     await conn.commit();

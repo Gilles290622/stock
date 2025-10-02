@@ -77,8 +77,8 @@ router.post('/register', async (req, res) => {
 
     // Insert dans profiles (avec username, role, status, etc.)
     await conn.execute(
-      'INSERT INTO profiles (user_id, role, status, username) VALUES (?, ?, ?, ?)',
-      [userId, 'user', 'pending', username]
+      'INSERT INTO profiles (user_id, role, status, username, free_days) VALUES (?, ?, ?, ?, ?)',
+      [userId, 'user', 'pending', username, 7]
     );
     console.log('Profile inserted for user ID:', userId);
 
@@ -116,8 +116,8 @@ router.post('/register', async (req, res) => {
           const [rp] = await rconn.execute('SELECT id FROM profiles WHERE user_id = ?', [userId]);
           if (rp.length === 0) {
             await rconn.execute(
-              'INSERT INTO profiles (user_id, role, status, username) VALUES (?, ?, ?, ?)',
-              [userId, 'user', 'pending', username]
+              'INSERT INTO profiles (user_id, role, status, username, free_days) VALUES (?, ?, ?, ?, ?)',
+              [userId, 'user', 'pending', username, 7]
             );
           } else {
             await rconn.execute(

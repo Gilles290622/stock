@@ -545,6 +545,14 @@ router.post('/push/mouvement/:id', authenticateToken, async (req, res) => {
 // PULL (remote -> local)
 // =====================
 
+// Simple helper to time out remote queries to avoid hanging SSE forever
+async function queryWithTimeout(conn, sql, params = [], timeoutMs = 15000) {
+  return await Promise.race([
+    conn.query(sql, params),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('Remote query timeout')), timeoutMs))
+  ]);
+}
+
 async function ensureLocalUser(conn, userId) {
   const [u] = await conn.query('SELECT id FROM users WHERE id = ? LIMIT 1', [userId]);
   if (!u || u.length === 0) {
@@ -566,7 +574,7 @@ async function pullCategoriesFromRemote(lconn, rconn) {
 }
 
 async function pullClientsFromRemote(userId, lconn, rconn) {
-  const [rows] = await rconn.query('SELECT id, user_id, name, address, phone, email FROM stock_clients WHERE user_id = ? ORDER BY id ASC', [userId]);
+  const [rows] = await queryWithTimeout(rconn, 'SELECT id, user_id, name, address, phone, email FROM stock_clients WHERE user_id = ? ORDER BY id ASC', [userId], 20000);
   await ensureLocalUser(lconn, userId);
   await lconn.beginTransaction();
   try {
@@ -806,7 +814,7 @@ router.get('/pull-general/progress', authenticateToken, async (req, res) => {
     } finally {
       try { lconn.release(); } catch {}
       try { rconn.release(); } catch {}
-      res.end();
+      try { res.end(); } catch {}
     }
   } catch (err) {
     try {
