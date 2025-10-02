@@ -21,17 +21,18 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-// Intercepteur de réponse: centralise 401/403
+// Intercepteur de réponse: centralise 401 (ne PAS se déconnecter pour 402/403)
 api.interceptors.response.use(
   (res) => res,
   (err) => {
     const status = err?.response?.status;
-    if (status === 401 || status === 403) {
+    if (status === 401) {
       try {
         localStorage.removeItem("token");
       } catch {}
       // Laisse le composant décider de la navigation, on rejette l'erreur
     }
+    // 402 (abonnement expiré) et 403 (interdit) doivent être gérés côté UI sans supprimer le token
     return Promise.reject(err);
   }
 );
