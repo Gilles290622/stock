@@ -116,6 +116,22 @@ router.post('/users/:id/reset-password-init', authenticateToken, requireAdmin, a
     const iso = expires.toISOString().slice(0, 19).replace('T', ' ');
     await db.execute('DELETE FROM password_resets WHERE user_id = ?', [id]);
     await db.execute('INSERT INTO password_resets (user_id, code, expires_at) VALUES (?, ?, ?)', [id, code, iso]);
-    return res.json({ success: true, code, expires_at: iso });
+    // Envoi email si SMTP configuré
+    let sent = false;
+    try {
+      const [urows] = await db.execute('SELECT email, full_name FROM users WHERE id = ? LIMIT 1', [id]);
+      const to = (urows.length && urows[0].email) ? urows[0].email : null;
+      if (to) {
+        const { sendMail } = require('../utils/mailer');
+        await sendMail({
+          to,
+          subject: 'Code de réinitialisation de mot de passe',
+          text: `Votre code de réinitialisation est: ${code} (valide jusqu'au ${iso}).`,
+          html: `<p>Votre code de réinitialisation est: <b>${code}</b></p><p>Valide jusqu'au ${iso}.</p>`
+        });
+        sent = true;
+      }
+    } catch (e) { /* noop */ }
+    return res.json({ success: true, code, expires_at: iso, sent });
   } catch (e) { return res.status(500).json({ error: 'Erreur serveur' }); }
 });
