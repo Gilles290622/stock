@@ -69,6 +69,7 @@ function AppContent() {
     const t = localStorage.getItem('token');
     if (!t) return; // pas de token => pas de SSE
     let es;
+    let timeoutId;
     const url = `/api/sync/pull-general/progress?token=${encodeURIComponent(t)}`;
     setAutoPull({ running: true, percent: 0, detail: 'Initialisation de la mise à jour locale…' });
     try {
@@ -79,15 +80,23 @@ function AppContent() {
           const d = JSON.parse(e.data);
           const label = d.message || (d.label || d.step || '');
           setAutoPull({ running: true, percent: Number(d.percent || 0), detail: label });
+          if (timeoutId) { clearTimeout(timeoutId); }
+          // refresh timeout on progress
+          timeoutId = setTimeout(() => {
+            try { es?.close(); } catch {}
+            setAutoPull({ running: false, percent: 0, detail: 'Temps dépassé pendant la mise à jour' });
+          }, 30000);
         } catch {}
       });
-      es.addEventListener('error', () => setAutoPull(prev => ({ ...prev, detail: 'Erreur de mise à jour locale' })));
-      es.addEventListener('done', () => { setAutoPull({ running: false, percent: 100, detail: 'Terminé' }); try { es?.close(); } catch {} });
+      es.addEventListener('error', () => { setAutoPull(prev => ({ ...prev, running: false, detail: 'Erreur de mise à jour locale' })); try { es?.close(); } catch {} });
+      es.addEventListener('done', (e) => { try { const d = JSON.parse(e.data); if (timeoutId) clearTimeout(timeoutId); } catch {} setAutoPull({ running: false, percent: 100, detail: 'Terminé' }); try { es?.close(); } catch {} });
+      // global timeout if no progress at all
+      timeoutId = setTimeout(() => { try { es?.close(); } catch {} setAutoPull({ running: false, percent: 0, detail: 'Temps dépassé pendant la mise à jour' }); }, 30000);
     } catch {
       setAutoPull({ running: false, percent: 0, detail: '' });
       try { es?.close(); } catch {}
     }
-    return () => { try { es?.close(); } catch {} };
+    return () => { if (timeoutId) clearTimeout(timeoutId); try { es?.close(); } catch {} };
   }, [user?.id, user?.auto_sync]);
 
   // Auto-sync on app open (for all roles if enabled by preference): stream progress via SSE (lancé après PULL)
@@ -101,6 +110,7 @@ function AppContent() {
     if (!t) return; // pas de token
     let aborted = false;
     let es;
+    let timeoutId;
     async function start() {
       try {
         setAutoSync({ running: true, percent: 0, detail: 'Initialisation…' });
@@ -115,22 +125,20 @@ function AppContent() {
             const d = JSON.parse(e.data);
             const label = d.message || (d.label || d.step || '');
             setAutoSync({ running: true, percent: Number(d.percent || 0), detail: label });
+            if (timeoutId) clearTimeout(timeoutId);
+            timeoutId = setTimeout(() => { try { es?.close(); } catch {} setAutoSync({ running: false, percent: 0, detail: 'Temps dépassé pendant la synchronisation' }); }, 30000);
           } catch {}
         });
-        es.addEventListener('error', (e) => {
-          setAutoSync(prev => ({ ...prev, detail: 'Erreur de synchronisation' }));
-        });
-        es.addEventListener('done', (e) => {
-          setAutoSync({ running: false, percent: 100, detail: 'Terminé' });
-          try { es?.close(); } catch {}
-        });
+        es.addEventListener('error', (e) => { setAutoSync(prev => ({ ...prev, running: false, detail: 'Erreur de synchronisation' })); try { es?.close(); } catch {} });
+        es.addEventListener('done', (e) => { try { const d = JSON.parse(e.data); if (timeoutId) clearTimeout(timeoutId); } catch {} setAutoSync({ running: false, percent: 100, detail: 'Terminé' }); try { es?.close(); } catch {} });
+        timeoutId = setTimeout(() => { try { es?.close(); } catch {} setAutoSync({ running: false, percent: 0, detail: 'Temps dépassé pendant la synchronisation' }); }, 30000);
       } catch {
         setAutoSync({ running: false, percent: 0, detail: '' });
         try { es?.close(); } catch {}
       }
     }
     const to = setTimeout(() => start(), 250);
-    return () => { aborted = true; clearTimeout(to); try { es?.close(); } catch {} };
+    return () => { aborted = true; clearTimeout(to); if (timeoutId) clearTimeout(timeoutId); try { es?.close(); } catch {} };
   }, [user?.id, user?.role, user?.auto_sync, autoPull.running]);
 
   // Version polling (toutes les 5 minutes) — évite les boucles de reload

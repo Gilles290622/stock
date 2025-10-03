@@ -561,7 +561,7 @@ async function ensureLocalUser(conn, userId) {
 }
 
 async function pullCategoriesFromRemote(lconn, rconn) {
-  const [rows] = await rconn.query('SELECT id, name FROM stock_categories ORDER BY id ASC');
+  const [rows] = await queryWithTimeout(rconn, 'SELECT id, name FROM stock_categories ORDER BY id ASC', [], 20000);
   await lconn.beginTransaction();
   try {
     await lconn.query('DELETE FROM stock_categories');
@@ -588,7 +588,7 @@ async function pullClientsFromRemote(userId, lconn, rconn) {
 }
 
 async function pullDesignationsFromRemote(userId, lconn, rconn) {
-  const [rows] = await rconn.query('SELECT id, user_id, name, current_stock, categorie FROM stock_designations WHERE user_id = ? ORDER BY id ASC', [userId]);
+  const [rows] = await queryWithTimeout(rconn, 'SELECT id, user_id, name, current_stock, categorie FROM stock_designations WHERE user_id = ? ORDER BY id ASC', [userId], 20000);
   await ensureLocalUser(lconn, userId);
   await lconn.beginTransaction();
   try {
@@ -602,7 +602,7 @@ async function pullDesignationsFromRemote(userId, lconn, rconn) {
 }
 
 async function pullMouvementsFromRemote(userId, lconn, rconn) {
-  const [rows] = await rconn.query(`SELECT id, user_id, DATE_FORMAT(date,'%Y-%m-%d') as date, type, designation_id, quantite, prix, client_id, stock, stockR FROM stock_mouvements WHERE user_id = ? ORDER BY id ASC`, [userId]);
+  const [rows] = await queryWithTimeout(rconn, `SELECT id, user_id, DATE_FORMAT(date,'%Y-%m-%d') as date, type, designation_id, quantite, prix, client_id, stock, stockR FROM stock_mouvements WHERE user_id = ? ORDER BY id ASC`, [userId], 20000);
   await ensureLocalUser(lconn, userId);
   await lconn.beginTransaction();
   try {
@@ -619,7 +619,7 @@ async function pullMouvementsFromRemote(userId, lconn, rconn) {
 }
 
 async function pullPaiementsFromRemote(userId, lconn, rconn) {
-  const [rows] = await rconn.query(`SELECT id, mouvement_id, user_id, montant, DATE_FORMAT(date,'%Y-%m-%d') as date FROM stock_paiements WHERE (user_id = ? OR user_id IS NULL) ORDER BY id ASC`, [userId]);
+  const [rows] = await queryWithTimeout(rconn, `SELECT id, mouvement_id, user_id, montant, DATE_FORMAT(date,'%Y-%m-%d') as date FROM stock_paiements WHERE (user_id = ? OR user_id IS NULL) ORDER BY id ASC`, [userId], 20000);
   await lconn.beginTransaction();
   try {
     await lconn.query('DELETE FROM stock_paiements WHERE user_id = ? OR user_id IS NULL', [userId]);
@@ -632,7 +632,7 @@ async function pullPaiementsFromRemote(userId, lconn, rconn) {
 }
 
 async function pullDepensesFromRemote(userId, lconn, rconn) {
-  const [rows] = await rconn.query(`SELECT id, user_id, DATE_FORMAT(date,'%Y-%m-%d') as date, libelle, montant, destinataire FROM stock_depenses WHERE user_id = ? ORDER BY id ASC`, [userId]);
+  const [rows] = await queryWithTimeout(rconn, `SELECT id, user_id, DATE_FORMAT(date,'%Y-%m-%d') as date, libelle, montant, destinataire FROM stock_depenses WHERE user_id = ? ORDER BY id ASC`, [userId], 20000);
   await lconn.beginTransaction();
   try {
     await lconn.query('DELETE FROM stock_depenses WHERE user_id = ?', [userId]);
@@ -654,20 +654,22 @@ router.get('/pull-general/progress', authenticateToken, async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, reason: 'remote_disabled' })}\n\n`);
       return res.end();
     }
-    const userId = req.user.id;
-    res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
-    res.flushHeaders?.();
-    const send = (event, data) => { try { res.write(`event: ${event}\n` + `data: ${JSON.stringify(data)}\n\n`); } catch {} };
-    let closed = false; req.on('close', () => { closed = true; });
+  const userId = req.user.id;
+  res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+  res.flushHeaders?.();
+  const send = (event, data) => { try { res.write(`event: ${event}\n` + `data: ${JSON.stringify(data)}\n\n`); } catch {} };
+  let closed = false; req.on('close', () => { closed = true; });
+  // Heartbeat to keep the connection alive and let frontend detect progress
+  const hb = setInterval(() => { if (!closed) { try { res.write(`: ping\n\n`); } catch {} } }, 5000);
 
     // Helpers for full tables (users, profiles, subscriptions_payments)
     async function pullUsersAll(l, r) {
       let rows;
       try {
-        [rows] = await r.query('SELECT id, full_name, entreprise, email, password, phone_number, logo FROM users ORDER BY id ASC');
+        [rows] = await queryWithTimeout(r, 'SELECT id, full_name, entreprise, email, password, phone_number, logo FROM users ORDER BY id ASC', [], 20000);
       } catch (e) {
         // Fallback sans colonne entreprise
-        [rows] = await r.query('SELECT id, full_name, email, password, phone_number, logo FROM users ORDER BY id ASC');
+        [rows] = await queryWithTimeout(r, 'SELECT id, full_name, email, password, phone_number, logo FROM users ORDER BY id ASC', [], 20000);
         rows = rows.map(u => ({ ...u, entreprise: null }));
       }
       const adminIds = (process.env.ADMIN_IDS || '1,7').split(',').map(s => s.trim());
@@ -708,13 +710,13 @@ router.get('/pull-general/progress', authenticateToken, async (req, res) => {
     async function pullProfilesAll(l, r) {
       let rows;
       try {
-        [rows] = await r.query('SELECT id, user_id, username, role, status, subscription_expires, free_days, auto_sync FROM profiles ORDER BY id ASC');
+        [rows] = await queryWithTimeout(r, 'SELECT id, user_id, username, role, status, subscription_expires, free_days, auto_sync FROM profiles ORDER BY id ASC', [], 20000);
       } catch (e) {
         try {
-          [rows] = await r.query('SELECT id, user_id, username, role, status, subscription_expires, free_days FROM profiles ORDER BY id ASC');
+          [rows] = await queryWithTimeout(r, 'SELECT id, user_id, username, role, status, subscription_expires, free_days FROM profiles ORDER BY id ASC', [], 20000);
           rows = rows.map(p => ({ ...p, auto_sync: 1 }));
         } catch (e2) {
-          [rows] = await r.query('SELECT id, user_id, username, role, status FROM profiles ORDER BY id ASC');
+          [rows] = await queryWithTimeout(r, 'SELECT id, user_id, username, role, status FROM profiles ORDER BY id ASC', [], 20000);
           rows = rows.map(p => ({ ...p, subscription_expires: null, free_days: 0, auto_sync: 1 }));
         }
       }
@@ -754,7 +756,7 @@ router.get('/pull-general/progress', authenticateToken, async (req, res) => {
     async function pullSubscriptionsPaymentsAll(l, r) {
       let rows;
       try {
-        [rows] = await r.query('SELECT id, user_id, amount, currency, phone, provider, reference, status, created_at FROM subscriptions_payments ORDER BY id ASC');
+        [rows] = await queryWithTimeout(r, 'SELECT id, user_id, amount, currency, phone, provider, reference, status, created_at FROM subscriptions_payments ORDER BY id ASC', [], 20000);
       } catch (e) {
         // table may not exist remotely
         return 0;
@@ -786,6 +788,7 @@ router.get('/pull-general/progress', authenticateToken, async (req, res) => {
     const rconn = await remotePool.getConnection();
     const lconn = await pool.getConnection();
     try {
+      let hadError = false;
       for (let i = 0; i < steps.length; i++) {
         if (closed) break;
         const s = steps[i];
@@ -808,10 +811,11 @@ router.get('/pull-general/progress', authenticateToken, async (req, res) => {
             }
           }
         }
-        if (lastErr) break;
+        if (lastErr) { hadError = true; break; }
       }
-      send('done', { success: true });
+      send('done', { success: !hadError });
     } finally {
+      clearInterval(hb);
       try { lconn.release(); } catch {}
       try { rconn.release(); } catch {}
       try { res.end(); } catch {}
