@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import api from "../api/axios";
 import { pushAll, pullAllSource } from '../api/sync';
 
-export default function Header({ username, userLogo, userNumber, onLogout, showSync = true, userId, role, entreprise: initialEntreprise, onEntrepriseChange }) {
+export default function Header({ username, userLogo, userNumber, onLogout, showSync = true, userId, role, entreprise: initialEntreprise, onEntrepriseChange, onManualPull, remoteOk }) {
   const navigate = useNavigate();
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState('');
@@ -67,7 +67,7 @@ export default function Header({ username, userLogo, userNumber, onLogout, showS
   const isAdmin = role === 'admin';
   return (
     <header className={`${isAdmin ? 'bg-indigo-700' : 'bg-green-700'} text-white py-4 px-8 flex justify-between items-center shadow`}>
-      <div className="flex items-center gap-4">
+  <div className="flex items-center gap-4">
         {/* Logo utilisateur */}
         <img
           src={userLogo || "/default-avatar.svg"}
@@ -134,6 +134,16 @@ export default function Header({ username, userLogo, userNumber, onLogout, showS
                 {syncing ? 'Synchronisation…' : 'Synchroniser'}
               </button>
             )}
+            {/* Bouton pour lancer manuellement la mise à jour depuis la base distante (PULL GENERAL) */}
+            {!isAdmin && (
+              <button
+                className={`px-3 py-2 rounded shadow bg-white text-green-700 hover:bg-green-50`}
+                onClick={() => onManualPull && onManualPull()}
+                title="Vérifier et importer les mises à jour depuis la base distante"
+              >
+                Mettre à jour (distante)
+              </button>
+            )}
             {/* MAJ SOURCE - visible uniquement pour l'utilisateur 7 et non admin */}
             {!isAdmin && Number(userId) === 7 && (
               <button
@@ -182,6 +192,16 @@ export default function Header({ username, userLogo, userNumber, onLogout, showS
           </button>
         )}
       </div>
+      {/* Indication sur la connectivité distante */}
+      {typeof remoteOk === 'boolean' && (
+        <div className="absolute left-1/2 -translate-x-1/2 top-full mt-2 text-sm">
+          {remoteOk ? (
+            <div className="bg-green-50 text-green-900 px-3 py-1 rounded shadow">Base distante disponible — vous pouvez lancer une mise à jour.</div>
+          ) : (
+            <div className="bg-yellow-50 text-yellow-900 px-3 py-1 rounded shadow">Base distante indisponible pour l’instant.</div>
+          )}
+        </div>
+      )}
       {(syncMsg || pullMsg) && (
         <div className="absolute left-1/2 -translate-x-1/2 top-full mt-2 bg-green-50 text-green-900 px-3 py-1 rounded shadow text-sm">
           {pullMsg || syncMsg}
