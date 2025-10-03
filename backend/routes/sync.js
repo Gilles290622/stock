@@ -199,6 +199,59 @@ router.get('/remote-status', authenticateToken, async (req, res) => {
   }
 });
 
+// GET /api/sync/remote-summary -> indique s'il y a des nouveautés coté distant (par comparaison simple counts / max id)
+router.get('/remote-summary', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    if (!remotePool) return res.json({ enabled: false });
+    const l = await pool.getConnection();
+    const r = await remotePool.getConnection();
+    try {
+      async function pair(sqlLocal, paramsLocal, sqlRemote, paramsRemote) {
+        const [[lc]] = await l.query(sqlLocal, paramsLocal);
+        const [[rc]] = await r.query(sqlRemote, paramsRemote);
+        const localCount = Number(lc.c || lc.count || 0);
+        const localMaxId = Number(lc.mx || lc.maxid || lc.max || 0);
+        const remoteCount = Number(rc.c || rc.count || 0);
+        const remoteMaxId = Number(rc.mx || rc.maxid || rc.max || 0);
+        const hasDiff = (remoteCount !== localCount) || (remoteMaxId > localMaxId);
+        return { localCount, remoteCount, localMaxId, remoteMaxId, hasDiff };
+      }
+      const categories = await pair(
+        'SELECT COUNT(*) c, COALESCE(MAX(id),0) mx FROM stock_categories', [],
+        'SELECT COUNT(*) c, COALESCE(MAX(id),0) mx FROM stock_categories', []
+      );
+      const clients = await pair(
+        'SELECT COUNT(*) c, COALESCE(MAX(id),0) mx FROM stock_clients WHERE user_id = ?', [userId],
+        'SELECT COUNT(*) c, COALESCE(MAX(id),0) mx FROM stock_clients WHERE user_id = ?', [userId]
+      );
+      const designations = await pair(
+        'SELECT COUNT(*) c, COALESCE(MAX(id),0) mx FROM stock_designations WHERE user_id = ?', [userId],
+        'SELECT COUNT(*) c, COALESCE(MAX(id),0) mx FROM stock_designations WHERE user_id = ?', [userId]
+      );
+      const mouvements = await pair(
+        'SELECT COUNT(*) c, COALESCE(MAX(id),0) mx FROM stock_mouvements WHERE user_id = ?', [userId],
+        'SELECT COUNT(*) c, COALESCE(MAX(id),0) mx FROM stock_mouvements WHERE user_id = ?', [userId]
+      );
+      const paiements = await pair(
+        'SELECT COUNT(*) c, COALESCE(MAX(id),0) mx FROM stock_paiements WHERE (user_id = ? OR user_id IS NULL)', [userId],
+        'SELECT COUNT(*) c, COALESCE(MAX(id),0) mx FROM stock_paiements WHERE (user_id = ? OR user_id IS NULL)', [userId]
+      );
+      const depenses = await pair(
+        'SELECT COUNT(*) c, COALESCE(MAX(id),0) mx FROM stock_depenses WHERE user_id = ?', [userId],
+        'SELECT COUNT(*) c, COALESCE(MAX(id),0) mx FROM stock_depenses WHERE user_id = ?', [userId]
+      );
+      const hasUpdates = [categories, clients, designations, mouvements, paiements, depenses].some(x => x.hasDiff);
+      return res.json({ enabled: true, hasUpdates, categories, clients, designations, mouvements, paiements, depenses });
+    } finally {
+      try { l.release(); } catch {}
+      try { r.release(); } catch {}
+    }
+  } catch (e) {
+    return res.status(500).json({ enabled: !!remotePool, error: e?.message || String(e) });
+  }
+});
+
 // GET /api/sync/replication-errors  (user 7) -> Liste des dernières erreurs de réplication
 router.get('/replication-errors', authenticateToken, (req, res) => {
   if (req.user?.id !== 7) return res.status(403).json({ error: 'Accès refusé' });

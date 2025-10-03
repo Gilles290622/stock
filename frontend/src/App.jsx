@@ -36,8 +36,6 @@ function AppContent() {
   const [showUpdateBanner, setShowUpdateBanner] = useState(false);
   const [autoSync, setAutoSync] = useState({ running: false, percent: 0, detail: '' });
   const [autoPull, setAutoPull] = useState({ running: false, percent: 0, detail: '' });
-  const [manualPullKey, setManualPullKey] = useState(0);
-  const [remoteOk, setRemoteOk] = useState(null); // null inconnu, true ok, false ko
   const [needImmediateReload, setNeedImmediateReload] = useState(false);
   const BUILD_VERSION = pkg.version;
   const navigate = useNavigate();
@@ -63,102 +61,9 @@ function AppContent() {
     })();
   }, []);
 
-  // Vérifier disponibilité distante (simple ping) pour informer l'utilisateur
-  useEffect(() => {
-    let ignore = false;
-    (async () => {
-      try {
-        const { data } = await api.get('/api/sync/remote-status');
-        if (!ignore) setRemoteOk(!!(data && data.enabled && data.ok));
-      } catch { if (!ignore) setRemoteOk(false); }
-    })();
-    return () => { ignore = true; };
-  }, [user?.id]);
+  // Désactivation de la synchro auto au rafraîchissement: on ne lance plus auto-PULL ici.
 
-  // PULL général — automatique uniquement au login (flag sessionStorage) et manuel sur demande
-  function startPullSSE() {
-    const t = localStorage.getItem('token');
-    if (!t) return;
-    let es; let timeoutId;
-    const url = `/api/sync/pull-general/progress?token=${encodeURIComponent(t)}`;
-    setAutoPull({ running: true, percent: 0, detail: 'Initialisation de la mise à jour locale…' });
-    try {
-      es = new EventSource(url);
-      es.addEventListener('start', () => setAutoPull({ running: true, percent: 0, detail: 'Démarrage…' }));
-      es.addEventListener('progress', (e) => {
-        try {
-          const d = JSON.parse(e.data);
-          const label = d.message || (d.label || d.step || '');
-          setAutoPull({ running: true, percent: Number(d.percent || 0), detail: label });
-          if (timeoutId) clearTimeout(timeoutId);
-          timeoutId = setTimeout(() => { try { es?.close(); } catch {}; setAutoPull({ running: false, percent: 0, detail: 'Temps dépassé pendant la mise à jour' }); }, 30000);
-        } catch {}
-      });
-      es.addEventListener('error', () => { setAutoPull(prev => ({ ...prev, running: false, detail: 'Erreur de mise à jour locale' })); try { es?.close(); } catch {} });
-      es.addEventListener('done', () => { if (timeoutId) clearTimeout(timeoutId); setAutoPull({ running: false, percent: 100, detail: 'Terminé' }); try { es?.close(); } catch {} });
-    } catch {
-      setAutoPull({ running: false, percent: 0, detail: '' });
-      try { es?.close(); } catch {}
-    }
-    return () => { if (timeoutId) clearTimeout(timeoutId); try { es?.close(); } catch {} };
-  }
-
-  // Auto-pull uniquement si login vient d’avoir lieu
-  useEffect(() => {
-    if (!user) return;
-    const justLoggedIn = typeof window !== 'undefined' && sessionStorage.getItem('justLoggedIn') === '1';
-    if (!justLoggedIn) return;
-    const cleanup = startPullSSE();
-    return () => { if (typeof cleanup === 'function') cleanup(); };
-  }, [user?.id]);
-
-  // PULL manuel déclenché depuis l’UI
-  useEffect(() => {
-    if (!manualPullKey) return;
-    const cleanup = startPullSSE();
-    return () => { if (typeof cleanup === 'function') cleanup(); };
-  }, [manualPullKey]);
-
-  // PUSH auto uniquement après login et après la fin du PULL; jamais au rafraîchissement
-  useEffect(() => {
-    if (!user) return;
-    const justLoggedIn = typeof window !== 'undefined' && sessionStorage.getItem('justLoggedIn') === '1';
-    if (!justLoggedIn) return;
-    if (autoPull.running) return; // attendre la fin du pull
-    const t = localStorage.getItem('token');
-    if (!t) return; // pas de token
-    let aborted = false;
-    let es;
-    let timeoutId;
-    async function start() {
-      try {
-        setAutoSync({ running: true, percent: 0, detail: 'Initialisation…' });
-        // Build authenticated SSE URL with token (Authorization headers aren’t supported by native EventSource)
-        const url = `/api/sync/push/progress?token=${encodeURIComponent(t)}`;
-        es = new EventSource(url);
-        es.addEventListener('start', (e) => {
-          try { const d = JSON.parse(e.data); setAutoSync({ running: true, percent: 0, detail: 'Démarrage…' }); } catch {}
-        });
-        es.addEventListener('progress', (e) => {
-          try {
-            const d = JSON.parse(e.data);
-            const label = d.message || (d.label || d.step || '');
-            setAutoSync({ running: true, percent: Number(d.percent || 0), detail: label });
-            if (timeoutId) clearTimeout(timeoutId);
-            timeoutId = setTimeout(() => { try { es?.close(); } catch {} setAutoSync({ running: false, percent: 0, detail: 'Temps dépassé pendant la synchronisation' }); }, 30000);
-          } catch {}
-        });
-        es.addEventListener('error', (e) => { setAutoSync(prev => ({ ...prev, running: false, detail: 'Erreur de synchronisation' })); try { es?.close(); } catch {} });
-  es.addEventListener('done', (e) => { try { const d = JSON.parse(e.data); if (timeoutId) clearTimeout(timeoutId); } catch {} setAutoSync({ running: false, percent: 100, detail: 'Terminé' }); try { es?.close(); } catch {}; try { sessionStorage.removeItem('justLoggedIn'); } catch {} });
-        timeoutId = setTimeout(() => { try { es?.close(); } catch {} setAutoSync({ running: false, percent: 0, detail: 'Temps dépassé pendant la synchronisation' }); }, 30000);
-      } catch {
-        setAutoSync({ running: false, percent: 0, detail: '' });
-        try { es?.close(); } catch {}
-      }
-    }
-    const to = setTimeout(() => start(), 250);
-    return () => { aborted = true; clearTimeout(to); if (timeoutId) clearTimeout(timeoutId); try { es?.close(); } catch {} };
-  }, [user?.id, user?.role, user?.auto_sync, autoPull.running]);
+  // Désactivation de l’auto-PUSH également tant que la manip est en cours.
 
   // Version polling (toutes les 5 minutes) — évite les boucles de reload
   useEffect(() => {
@@ -217,7 +122,6 @@ function AppContent() {
     if (userObj?.logo) {
       try { localStorage.setItem('user_logo', userObj.logo); } catch {}
     }
-    try { sessionStorage.setItem('justLoggedIn', '1'); } catch {}
     setUser({
       ...userObj,
       logo: localStorage.getItem('user_logo') || userObj.logo || '',
@@ -251,8 +155,6 @@ function AppContent() {
         userId={user?.id}
         role={user?.role}
         entreprise={user?.entreprise}
-        onManualPull={() => setManualPullKey(v => v + 1)}
-        remoteOk={remoteOk}
       />
       {showUpdateBanner && (
         <div className="bg-yellow-100 border-b border-yellow-300 text-yellow-800 text-sm flex items-center justify-between px-4 py-2">
