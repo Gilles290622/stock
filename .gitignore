@@ -23,6 +23,13 @@ backend/data/*.db
 # Local data folder (do not commit local databases/backups)
 data/
 
+# SQLite databases and journals (never commit local DBs)
+*.sqlite
+*.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
+*.db
+
 # Local SQL setup (contains secrets, keep local only)
 backend/sql/000_setup_local.sql
 
