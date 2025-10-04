@@ -13,7 +13,18 @@ const designationsRoutes = require("./routes/designations");
 const clientsRoutes = require("./routes/clients");
 const stockPaiementsRouter = require('./routes/stockPaiements');
 const syncRoutes = require('./routes/sync');
-const remotePool = require('./config/remoteDb');
+// Remote replication pool (can be disabled via DISABLE_REMOTE_REPLICATION=true)
+let remotePool;
+try {
+  remotePool = require('./config/remoteDb');
+  if (String(process.env.DISABLE_REMOTE_REPLICATION || '').toLowerCase() === 'true') {
+    console.log('[replication] Disabled explicitly by DISABLE_REMOTE_REPLICATION env');
+    remotePool = null;
+  }
+} catch (e) {
+  console.warn('[replication] remoteDb require failed:', e?.message || e);
+  remotePool = null;
+}
 const subscriptionGuard = require('./middleware/subscription');
 
 const app = express();
@@ -225,7 +236,17 @@ if (PORT === 80) {
   console.log('[startup] Tentative d\'écoute sur le port 80');
 }
 app.listen(PORT, '0.0.0.0', () => {
-  console.log("API démarrée sur le port", PORT);
+  console.log("API démarrée sur le port", PORT, '| cwd=', process.cwd(), '| driver=', process.env.DB_DRIVER, '| sqliteFile=', process.env.SQLITE_FILE);
+  // Heartbeat + diagnostics timers to detect silent exits
+  setTimeout(() => console.log('[lifecycle] heartbeat 3s OK'), 3000);
+  setInterval(() => {
+    const mem = process.memoryUsage();
+    console.log('[lifecycle] tick', new Date().toISOString(), 'rssMB=', (mem.rss/1024/1024).toFixed(1));
+  }, 15000).unref();
+});
+
+process.on('exit', (code) => {
+  console.log('[lifecycle] process exit event code=', code);
 });
 
 module.exports = app;
