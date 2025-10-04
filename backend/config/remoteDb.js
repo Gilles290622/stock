@@ -26,27 +26,36 @@ if (REMOTE_DB_HOST && REMOTE_DB_USER && REMOTE_DB_PASSWORD && REMOTE_DB_NAME) {
       waitForConnections: true,
       connectionLimit: 5,
       queueLimit: 0,
+      connectTimeout: 8000
     };
     if (String(REMOTE_DB_SSL || '').toLowerCase() === 'true') {
       cfg.ssl = { rejectUnauthorized: false };
     }
     pool = mysql.createPool(cfg);
-    // Lazy test on use; no throw here to avoid crashing local-only runs
-    ;(async () => {
-      // Auto-migration légère: ajouter colonne 'entreprise' si manquante
+    // Light async validation without throwing fatal errors
+    (async () => {
+      let conn;
       try {
-        const conn = await pool.getConnection();
+        conn = await pool.getConnection();
+        // Quick ping
+        await conn.query('SELECT 1');
+        // Optional: ensure entreprise column
         try {
           const [cols] = await conn.query("SHOW COLUMNS FROM users LIKE 'entreprise'");
           if (!Array.isArray(cols) || cols.length === 0) {
-            await conn.query("ALTER TABLE users ADD COLUMN entreprise VARCHAR(255) NULL AFTER full_name");
-            console.log('[remoteDb] Colonne entreprise ajoutée sur la base distante');
+            try {
+              await conn.query("ALTER TABLE users ADD COLUMN entreprise VARCHAR(255) NULL AFTER full_name");
+              console.log('[remoteDb] Colonne entreprise ajoutée sur la base distante');
+            } catch (alterErr) {
+              console.warn('[remoteDb] ALTER entreprise ignoré:', alterErr?.message || alterErr);
+            }
           }
-        } finally { conn.release(); }
-      } catch (e) {
-        // Ne pas bloquer si absence de droits ou table manquante
-        console.warn('[remoteDb] Auto-migration entreprise ignorée:', e?.message || e);
-      }
+        } catch (colCheckErr) {
+          console.warn('[remoteDb] Column check entreprise ignoré:', colCheckErr?.message || colCheckErr);
+        }
+      } catch (pingErr) {
+        console.warn('[remoteDb] Ping distant échoué (continuation en mode local):', pingErr?.message || pingErr);
+      } finally { if (conn) conn.release(); }
     })();
   } catch (e) {
     console.warn('Remote DB pool init skipped:', e?.message || e);

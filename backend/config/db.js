@@ -10,9 +10,11 @@ if (DRIVER === 'sqlite' || DRIVER === 'sqlite3') {
   // Resolve SQLITE_FILE relative to backend root (.. from config/) when it's not absolute,
   // so running from different cwd (pm2 vs scripts) points to the same file.
   const configured = process.env.SQLITE_FILE;
-  const file = configured
+  let file = configured
     ? (path.isAbsolute(configured) ? configured : path.resolve(path.join(__dirname, '..'), configured))
     : path.join(__dirname, '..', 'data', 'app.sqlite');
+  // Sanitize accidental double 'backend/backend' duplication if user set SQLITE_FILE with a leading 'backend/' from repo root
+  file = file.replace(/backend\\backend|backend\/backend/g, 'backend');
   const dir = path.dirname(file);
   fs.mkdirSync(dir, { recursive: true });
 
