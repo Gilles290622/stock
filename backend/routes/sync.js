@@ -3,7 +3,9 @@ const router = express.Router();
 const pool = require('../config/db');
 const authenticateToken = require('../middleware/auth');
 const mysql = require('mysql2/promise');
-const remotePool = require('../config/remoteDb');
+const _remotePoolRaw = require('../config/remoteDb');
+const _replicationDisabled = String(process.env.DISABLE_REMOTE_REPLICATION || '').toLowerCase() === 'true';
+const remotePool = _replicationDisabled ? null : _remotePoolRaw;
 const { getReplicationErrors, logReplicationError } = require('../utils/replicationLog');
 
 function normStr(s, { zeroIsEmpty = true } = {}) {
@@ -205,8 +207,15 @@ router.get('/remote-summary', authenticateToken, async (req, res) => {
     const userId = req.user.id;
     if (!remotePool) return res.json({ enabled: false });
     const l = await pool.getConnection();
-    const r = await remotePool.getConnection();
+    let r;
     try {
+      try {
+        r = await remotePool.getConnection();
+      } catch (connErr) {
+        // Ne pas renvoyer 500: indiquer seulement l'indispo distante
+        try { l.release(); } catch {}
+        return res.json({ enabled: true, hasUpdates: false, error: connErr?.message || String(connErr) });
+      }
       async function pair(sqlLocal, paramsLocal, sqlRemote, paramsRemote) {
         const [[lc]] = await l.query(sqlLocal, paramsLocal);
         const [[rc]] = await r.query(sqlRemote, paramsRemote);
@@ -245,10 +254,11 @@ router.get('/remote-summary', authenticateToken, async (req, res) => {
       return res.json({ enabled: true, hasUpdates, categories, clients, designations, mouvements, paiements, depenses });
     } finally {
       try { l.release(); } catch {}
-      try { r.release(); } catch {}
+      try { r && r.release(); } catch {}
     }
   } catch (e) {
-    return res.status(500).json({ enabled: !!remotePool, error: e?.message || String(e) });
+    // Eviter un 500 côté client: retourner un état safe
+    return res.json({ enabled: !!remotePool, hasUpdates: false, error: e?.message || String(e) });
   }
 });
 
