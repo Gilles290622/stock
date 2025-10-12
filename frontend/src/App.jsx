@@ -142,7 +142,7 @@ function AppContent() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-white">
+    <div className="min-h-screen flex flex-col bg-slate-50">
       {(autoPull.running || autoSync.running) && (
         <FullScreenLoader title="Synchronisation avec la base distante" percent={autoSync.running ? autoSync.percent : autoPull.percent} detail={autoSync.running ? autoSync.detail : autoPull.detail} />
       )}
@@ -157,15 +157,18 @@ function AppContent() {
         entreprise={user?.entreprise}
       />
       {showUpdateBanner && (
-        <div className="bg-yellow-100 border-b border-yellow-300 text-yellow-800 text-sm flex items-center justify-between px-4 py-2">
-          <div>Une nouvelle version de l'application est disponible (serveur {serverVersion}, vous {appVersion}).</div>
-          <div className="flex items-center gap-2">
-            <button onClick={applyUpdateNow} className="px-3 py-1 rounded bg-yellow-600 text-white text-xs hover:bg-yellow-700">Recharger</button>
-            <button onClick={() => setShowUpdateBanner(false)} className="px-2 py-1 text-xs text-yellow-700 hover:underline">Plus tard</button>
+        <div className="border-b border-amber-300 bg-amber-50 text-amber-900 text-sm">
+          <div className="max-w-7xl mx-auto px-6 py-2 flex items-center justify-between gap-4">
+            <div className="truncate">Une nouvelle version de l'application est disponible (serveur {serverVersion}, vous {appVersion}).</div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button onClick={applyUpdateNow} className="px-3 py-1.5 rounded-md bg-amber-600 text-white text-xs hover:bg-amber-700 shadow-sm">Recharger</button>
+              <button onClick={() => setShowUpdateBanner(false)} className="px-2.5 py-1.5 text-xs text-amber-900 border border-amber-300 rounded-md hover:bg-amber-100">Plus tard</button>
+            </div>
           </div>
         </div>
       )}
-      <main className="flex-1 container mx-auto p-6">
+      <main className="flex-1 w-full">
+        <div className="max-w-7xl mx-auto w-full px-6 py-6">
         <Routes>
           <Route
             path="/"
@@ -229,6 +232,7 @@ function AppContent() {
           />
           <Route path="*" element={<Navigate to="/login" />} />
         </Routes>
+        </div>
       </main>
       <Footer />
     </div>

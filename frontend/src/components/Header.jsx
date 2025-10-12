@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../api/axios";
-import { pushAll, pullAllSource } from '../api/sync';
+import { pushAll, pullAllSource, pushAllSSE } from '../api/sync';
 
 export default function Header({ username, userLogo, userNumber, onLogout, showSync = true, userId, role, entreprise: initialEntreprise, onEntrepriseChange }) {
   const navigate = useNavigate();
@@ -52,19 +52,37 @@ export default function Header({ username, userLogo, userNumber, onLogout, showS
   }
 
   async function handleSyncAll() {
-    try {
-      setSyncMsg('');
-      setSyncing(true);
-      const res = await pushAll();
-      const r = res?.result || {};
-      const msg = `Synchronisé: clients=${r.clients ?? 0}, designations=${r.designations ?? 0}, mouvements=${r.mouvements ?? 0}, paiements=${r.paiements ?? 0}, depenses=${r.depenses ?? 0}`;
-      setSyncMsg(msg);
-    } catch (e) {
-      const err = e?.response?.data?.error || e?.message || 'Erreur';
-      setSyncMsg(`Erreur de synchronisation: ${err}`);
-    } finally {
-      setSyncing(false);
-    }
+    // Nouvelle implémentation: SSE comme l'auto-sync
+    if (syncing) return;
+    setSyncMsg('');
+    setSyncing(true);
+    let lastLabel = '';
+    const ctrl = pushAllSSE({
+      onStart: (data) => {
+        setSyncMsg('Démarrage de la synchronisation…');
+      },
+      onProgress: (p) => {
+        const label = p?.label || p?.step || '';
+        lastLabel = label;
+        const percent = (typeof p?.percent === 'number') ? ` ${p.percent}%` : '';
+        const message = p?.message || '';
+        setSyncMsg(`${label}${percent}${message ? ' - ' + message : ''}`);
+      },
+      onError: (msg) => {
+        setSyncMsg(`Erreur de synchronisation: ${msg}`);
+        setSyncing(false);
+      },
+      onDone: (payload) => {
+        if (payload?.success) {
+          setSyncMsg(`Synchronisation terminée${lastLabel ? ' - ' + lastLabel : ''}`);
+        } else {
+          setSyncMsg('Synchronisation terminée avec avertissements');
+        }
+        setSyncing(false);
+      }
+    });
+    // Optionnel: renvoyer le contrôleur pour annulation si nécessaire
+    return ctrl;
   }
 
   async function handlePullAll() {
@@ -86,21 +104,22 @@ export default function Header({ username, userLogo, userNumber, onLogout, showS
 
   const isAdmin = role === 'admin';
   return (
-    <header className={`${isAdmin ? 'bg-indigo-700' : 'bg-green-700'} text-white py-4 px-8 flex justify-between items-center shadow`}>
-      <div className="flex items-center gap-4">
-        {/* Logo utilisateur */}
-        <img
-          src={userLogo || "/default-avatar.svg"}
-          alt="Avatar utilisateur"
-          className="h-10 w-10 rounded-full border object-cover"
-        />
-        <div className="font-bold text-2xl tracking-wide">{isAdmin ? 'Administration' : 'Gestion de stock'}</div>
+    <header className={`sticky top-0 z-40 backdrop-blur supports-[backdrop-filter]:bg-white/80 bg-white border-b border-slate-200 text-slate-800`}>
+      <div className="max-w-7xl mx-auto px-6 py-3 flex justify-between items-center">
+        <div className="flex items-center gap-3 min-w-0">
+          {/* Logo utilisateur */}
+          <img
+            src={userLogo || "/default-avatar.svg"}
+            alt="Avatar utilisateur"
+            className="h-9 w-9 rounded-full border border-slate-200 object-cover bg-white"
+          />
+          <div className="font-semibold text-lg truncate">{isAdmin ? 'Administration' : 'Gestion de stock'}</div>
         {username && (
           <div className="ml-2">
             {!editingEnt && (
               <button
                 type="button"
-                className="px-2 py-1 text-xs rounded bg-green-800 hover:bg-green-900 transition border border-green-600"
+                className="px-2.5 py-1.5 text-xs rounded-md bg-slate-800 text-white hover:bg-slate-900 transition border border-slate-700 shadow-sm"
                 title="Modifier le nom d'entreprise"
                 onClick={() => setEditingEnt(true)}
               >
@@ -108,12 +127,12 @@ export default function Header({ username, userLogo, userNumber, onLogout, showS
               </button>
             )}
             {editingEnt && (
-              <div className="flex items-center gap-1">
+              <div className="flex items-center gap-1.5">
                 <input
                   type="text"
                   value={entreprise}
                   onChange={e=>setEntreprise(e.target.value)}
-                  className="px-2 py-1 text-xs rounded border border-green-300 text-black"
+                  className="px-2.5 py-1.5 text-xs rounded-md border border-slate-300 text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-slate-200"
                   placeholder="Nom entreprise"
                   maxLength={255}
                   autoFocus
@@ -122,31 +141,31 @@ export default function Header({ username, userLogo, userNumber, onLogout, showS
                   type="button"
                   disabled={savingEnt}
                   onClick={saveEntreprise}
-                  className="px-2 py-1 text-xs rounded bg-white text-green-700 border border-green-500 hover:bg-green-50 disabled:opacity-50"
+                  className="px-2.5 py-1.5 text-xs rounded-md bg-slate-900 text-white border border-slate-900 hover:bg-slate-800 disabled:opacity-50"
                 >{savingEnt ? '...' : 'OK'}</button>
                 <button
                   type="button"
                   onClick={()=>{ setEditingEnt(false); setEntreprise(initialEntreprise || ''); }}
-                  className="px-2 py-1 text-xs rounded bg-transparent border border-green-300 hover:bg-green-800/30"
+                  className="px-2.5 py-1.5 text-xs rounded-md bg-transparent border border-slate-300 text-slate-700 hover:bg-slate-100"
                 >X</button>
               </div>
             )}
-            {entMsg && <div className="text-[10px] text-green-200 mt-0.5">{entMsg}</div>}
+            {entMsg && <div className="text-[10px] text-slate-500 mt-0.5">{entMsg}</div>}
           </div>
         )}
         {/* Numéro utilisateur */}
         {userNumber && (
-          <span className="bg-green-800 px-3 py-1 rounded-full text-xs font-semibold ml-2">
+          <span className="bg-slate-100 text-slate-700 px-2.5 py-1 rounded-full text-xs font-medium ml-2 border border-slate-200">
             N° {userNumber}
           </span>
         )}
       </div>
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-3">
         {username ? (
           <>
             {!isAdmin && showSync && (
               <button
-                className={`px-3 py-2 rounded shadow ${syncing ? 'bg-gray-300 cursor-not-allowed' : 'bg-white text-green-700 hover:bg-green-50'}`}
+                className={`px-3 py-2 rounded-md shadow-sm border ${syncing ? 'bg-slate-100 text-slate-400 cursor-not-allowed border-slate-200' : 'bg-white text-slate-700 hover:bg-slate-50 border-slate-200'}`}
                 onClick={handleSyncAll}
                 disabled={syncing}
                 title="Synchroniser toutes les données locales vers la base distante"
@@ -156,14 +175,14 @@ export default function Header({ username, userLogo, userNumber, onLogout, showS
             )}
             {/* Indicateur de nouveautés distantes */}
             {!isAdmin && (
-              <span className={`text-xs px-2 py-1 rounded ${remoteInfo.hasUpdates ? 'bg-yellow-200 text-yellow-900 border border-yellow-400' : 'bg-gray-100 text-gray-600 border border-gray-300'}`} title="État des nouveautés distantes (vérification périodique)">
+              <span className={`text-xs px-2.5 py-1 rounded-md border ${remoteInfo.hasUpdates ? 'bg-amber-50 text-amber-900 border-amber-300' : 'bg-slate-50 text-slate-600 border-slate-200'}`} title="État des nouveautés distantes (vérification périodique)">
                 {remoteInfo.checking ? 'Vérification…' : (remoteInfo.hasUpdates ? 'Nouveautés disponibles' : 'À jour')}
               </span>
             )}
             {/* MAJ SOURCE - visible uniquement pour l'utilisateur 7 et non admin */}
             {!isAdmin && Number(userId) === 7 && (
               <button
-                className={`px-3 py-2 rounded shadow ${pulling ? 'bg-gray-300 cursor-not-allowed' : 'bg-white text-green-700 hover:bg-green-50'}`}
+                className={`px-3 py-2 rounded-md shadow-sm border ${pulling ? 'bg-slate-100 text-slate-400 cursor-not-allowed border-slate-200' : 'bg-white text-slate-700 hover:bg-slate-50 border-slate-200'}`}
                 onClick={handlePullAll}
                 disabled={pulling}
                 title="Importer clients + produits depuis la SOURCE (structure-elmorijah.com)"
@@ -173,7 +192,7 @@ export default function Header({ username, userLogo, userNumber, onLogout, showS
             )}
             {isAdmin && (
               <button
-                className="px-3 py-2 rounded shadow bg-white text-indigo-700 hover:bg-indigo-50"
+                className="px-3 py-2 rounded-md shadow-sm border bg-white text-indigo-700 hover:bg-indigo-50 border-slate-200"
                 onClick={() => navigate('/admin')}
                 title="Espace administration"
               >
@@ -183,36 +202,37 @@ export default function Header({ username, userLogo, userNumber, onLogout, showS
             {/* Lien profil/configuration (caché pour admin) */}
             {!isAdmin && (
               <button
-                className="underline font-medium hover:text-green-200"
+                className="underline font-medium text-slate-700 hover:text-slate-900"
                 onClick={() => navigate("/profile")}
                 title="Paramètres du profil"
               >
                 Profil
               </button>
             )}
-            <span className="font-medium">Session : <span className="underline">{username}</span></span>
+            <span className="font-medium text-slate-700">Session : <span className="underline decoration-slate-300 underline-offset-4">{username}</span></span>
             <button
-              className="p-2 rounded-full hover:bg-green-800 focus:outline-none"
+              className="p-2 rounded-full hover:bg-slate-100 focus:outline-none border border-slate-200"
               title="Déconnexion"
               onClick={onLogout}
             >
               {/* Icône de déconnexion SVG */}
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-slate-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a2 2 0 01-2 2H7a2 2 0 01-2-2V7a2 2 0 012-2h4a2 2 0 012 2v1" />
               </svg>
             </button>
           </>
         ) : (
-          <button className="bg-white text-green-700 px-4 py-2 rounded shadow hover:bg-green-50">
+          <button className="px-4 py-2 rounded-md shadow-sm border bg-white text-slate-700 hover:bg-slate-50 border-slate-200">
             Connexion
           </button>
         )}
       </div>
       {(syncMsg || pullMsg) && (
-        <div className="absolute left-1/2 -translate-x-1/2 top-full mt-2 bg-green-50 text-green-900 px-3 py-1 rounded shadow text-sm">
+        <div className="absolute left-1/2 -translate-x-1/2 top-[60px] mt-2 bg-slate-50 text-slate-700 px-3 py-1 rounded-md shadow-sm border border-slate-200 text-xs">
           {pullMsg || syncMsg}
         </div>
       )}
+      </div>
     </header>
   );
 }
