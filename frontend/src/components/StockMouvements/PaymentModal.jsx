@@ -221,7 +221,7 @@ const PaymentModal = ({ open, onClose, mouvement, token }) => {
 
           <div className="mt-4 overflow-x-auto max-h-[40vh]">
             <table className="min-w-full border border-gray-200">
-              <thead className="bg-gray-100">
+              <thead className="bg-slate-50">
                 <tr>
                   <th className="py-2 px-3 border-b text-left w-12">#</th>
                   <th className="py-2 px-3 border-b text-left">Date</th>

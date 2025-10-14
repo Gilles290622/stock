@@ -167,7 +167,7 @@ const ModalHistoriqueRecherche = ({
               ref={tableRef}
               className="min-w-full border shadow rounded-xl overflow-hidden print:w-full print:shadow-none print:rounded-none print:text-black print:bg-white text-base print:text-2xl"
             >
-              <thead className="bg-gray-100 print:bg-white">
+              <thead className="bg-slate-50 print:bg-white">
                 <tr>
                   <th className="px-2 py-2 text-left">#</th>
                   <th className="px-2 py-2 text-left">Date</th>

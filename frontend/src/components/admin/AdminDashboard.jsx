@@ -56,8 +56,8 @@ export default function AdminDashboard({ user }) {
       {tab === 'users' && (loading ? <div>Chargement…</div> : (
         <div className="overflow-x-auto">
           <table className="min-w-full border text-sm">
-            <thead>
-              <tr className="bg-gray-50">
+            <thead className="bg-slate-50">
+              <tr>
                 <th className="p-2 border">ID</th>
                 <th className="p-2 border">Nom</th>
                 <th className="p-2 border">Email</th>

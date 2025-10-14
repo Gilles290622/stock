@@ -31,7 +31,7 @@ const StockTable = ({
   return (
     <div className="overflow-x-auto md:max-h-[640px] overflow-y-auto">
       <table className="min-w-full bg-white border border-gray-200 rounded-lg shadow-md">
-        <thead className="bg-green-100">
+        <thead className="bg-slate-50">
           <tr>
             <th className="py-3 px-2 border-b text-left font-medium w-8">
               <input

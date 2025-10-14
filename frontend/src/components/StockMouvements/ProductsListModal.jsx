@@ -101,7 +101,7 @@ export default function ProductsListModal({ open, onClose }) {
           {error && <div className="text-red-600">{error}</div>}
           <div className="max-h-[60vh] overflow-y-auto border rounded">
             <table className="min-w-full text-sm">
-              <thead className="bg-gray-50">
+              <thead className="bg-slate-50">
                 <tr>
                   <th className="px-3 py-2 text-left">Désignation</th>
                   <th className="px-3 py-2 text-right">Stock</th>

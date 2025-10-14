@@ -200,7 +200,7 @@ const PointJourModal = ({ open, onClose, caissier, defaultDate, token }) => {
           <div className="mt-6 text-sm text-gray-500 px-6 print:mt-2">Signature caissier : _____________________</div>
         </div>
         {/* Zone action toujours masquée à l'impression */}
-        <div className="mt-6 px-6 pb-6 flex items-center justify-end gap-3 print:hidden bg-gray-50 rounded-b-lg shadow-inner sticky bottom-0">
+  <div className="mt-6 px-6 pb-6 flex items-center justify-end gap-3 print:hidden bg-slate-50 rounded-b-lg shadow-inner sticky bottom-0">
           <button
             type="button"
             className="border bg-white px-4 py-2 rounded hover:bg-gray-50"
