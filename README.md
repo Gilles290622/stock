@@ -47,3 +47,5 @@ Le projet Vite est configuré avec un proxy vers `http://localhost:3001` pour `/
 - Étapes poussées: `categories`, `clients`, `designations`, `mouvements`, `paiements`, `depenses`.
 
 ### 6) Dépendances clés
+
+

@@ -47,7 +47,8 @@ const PaymentModal = ({ open, onClose, mouvement, token }) => {
         const totalPaid = normalized.reduce((s, p) => s + (Number(p.montant) || 0), 0);
         const mvAmount = Number(mouvement.montant) || 0;
         const reste = Math.max(mvAmount - totalPaid, 0);
-        setForm({ date: getTodayFr(), amount: reste > 0 ? reste : mvAmount });
+        // Pré-remplir avec le reste s'il y en a; sinon laisser vide (mouvement déjà soldé)
+        setForm({ date: getTodayFr(), amount: reste > 0 ? reste : "" });
       } catch (err) {
         setError(err?.response?.data?.error || "Impossible de charger les paiements.");
       } finally {
@@ -84,6 +85,7 @@ const PaymentModal = ({ open, onClose, mouvement, token }) => {
     const amount = Number(String(form.amount).replace(/\s/g, "").replace(",", ".")) || 0;
     if (!iso) return setError("Date invalide. Utilisez JJ/MM/AAAA.");
     if (amount <= 0) return setError("Montant à payer invalide (> 0).");
+    if (amount > totals.reste) return setError("Montant supérieur au reste à payer.");
 
     try {
       setLoading(true);
@@ -114,6 +116,11 @@ const PaymentModal = ({ open, onClose, mouvement, token }) => {
     const amount = Number(String(editForm.amount).replace(/\s/g, "").replace(",", ".")) || 0;
     if (!iso) return setError("Date invalide. Utilisez JJ/MM/AAAA.");
     if (amount <= 0) return setError("Montant invalide (> 0).");
+    // Empêcher que la somme totale dépasse le montant du mouvement
+    const current = list.find((x) => x.id === editingId);
+    const old = Number(current?.montant) || 0;
+    const newTotal = totals.totalPaid - old + amount;
+    if (newTotal > totals.mvAmount) return setError("Le total des paiements dépasse le montant du mouvement.");
     try {
       setRowLoadingId(editingId);
       await api.patch(`/api/stockPaiements/${editingId}`, { date: iso, montant: amount }, {
@@ -203,7 +210,7 @@ const PaymentModal = ({ open, onClose, mouvement, token }) => {
                 type="button"
                 className="border px-4 py-2 rounded hover:bg-gray-50"
                 onClick={() => setForm((p) => ({ ...p, amount: totals.reste }))}
-                disabled={loading}
+                disabled={loading || totals.reste <= 0}
                 title="Saisir le reste à payer"
               >
                 Solder
@@ -211,10 +218,10 @@ const PaymentModal = ({ open, onClose, mouvement, token }) => {
               <button
                 type="submit"
                 className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 disabled:opacity-50"
-                disabled={loading}
+                disabled={loading || totals.reste <= 0}
                 title="Enregistrer le paiement"
               >
-                {loading ? "Enregistrement..." : "Payer"}
+                {loading ? "Enregistrement..." : (totals.reste <= 0 ? "Déjà soldé" : "Payer")}
               </button>
             </div>
           </form>
@@ -335,7 +342,7 @@ const PaymentModal = ({ open, onClose, mouvement, token }) => {
                 )}
               </tbody>
               <tfoot>
-                <tr className="bg-gray-50">
+                <tr className="bg-slate-50">
                   <td className="py-2 px-3 border-0" colSpan={2}>
                     Total payé
                   </td>

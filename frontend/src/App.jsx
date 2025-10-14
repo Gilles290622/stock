@@ -48,12 +48,12 @@ function AppContent() {
     // Puis récupérer profil complet (logo inclus)
     (async () => {
       try {
-  const { data } = await api.get('/api/me');
+        const { data } = await api.get('/api/me');
         if (data?.user) {
           if (data.user.logo) {
             try { localStorage.setItem('user_logo', data.user.logo); } catch {}
           }
-            setUser(prev => ({ ...prev, ...data.user }));
+          setUser(prev => ({ ...prev, ...data.user }));
         }
       } catch (e) {
         // silencieux, on laisse le token deco si 401
@@ -62,7 +62,6 @@ function AppContent() {
   }, []);
 
   // Désactivation de la synchro auto au rafraîchissement: on ne lance plus auto-PULL ici.
-
   // Désactivation de l’auto-PUSH également tant que la manip est en cours.
 
   // Version polling (toutes les 5 minutes) — évite les boucles de reload
@@ -169,69 +168,69 @@ function AppContent() {
       )}
       <main className="flex-1 w-full">
         <div className="max-w-7xl mx-auto w-full px-6 py-6">
-        <Routes>
-          <Route
-            path="/"
-            element={
-              <PrivateRoute>
-                {user?.role === 'admin' ? (
-                  <Navigate to="/admin" />
-                ) : (
-                  <StockMouvements user={user} />
-                )}
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/admin"
-            element={
-              <PrivateRoute>
-                <AdminDashboard user={user} />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/login"
-            element={
-              user
-                ? <Navigate to="/" />
-                : <Login onLogin={handleLogin} />
-            }
-          />
-          <Route
-            path="/register"
-            element={
-              user
-                ? <Navigate to="/" />
-                : <Register onRegister={handleLogin} />
-            }
-          />
-          <Route
-            path="/profile"
-            element={
-              user
-                ? <Profile user={user} onEdit={handleProfileUpdate} />
-                : <Navigate to="/login" />
-            }
-          />
-          <Route
-            path="/profile/settings"
-            element={
-              user
-                ? <ProfileSettings user={user} onUpdate={handleProfileUpdate} />
-                : <Navigate to="/login" />
-            }
-          />
-          <Route
-            path="/home"
-            element={
-              user
-                ? <Navigate to="/" />
-                : <Navigate to="/login" />
-            }
-          />
-          <Route path="*" element={<Navigate to="/login" />} />
-        </Routes>
+          <Routes>
+            <Route
+              path="/"
+              element={
+                <PrivateRoute>
+                  {user?.role === 'admin' ? (
+                    <Navigate to="/admin" />
+                  ) : (
+                    <StockMouvements user={user} />
+                  )}
+                </PrivateRoute>
+              }
+            />
+            <Route
+              path="/admin"
+              element={
+                <PrivateRoute>
+                  <AdminDashboard user={user} />
+                </PrivateRoute>
+              }
+            />
+            <Route
+              path="/login"
+              element={
+                user
+                  ? <Navigate to="/" />
+                  : <Login onLogin={handleLogin} />
+              }
+            />
+            <Route
+              path="/register"
+              element={
+                user
+                  ? <Navigate to="/" />
+                  : <Register onRegister={handleLogin} />
+              }
+            />
+            <Route
+              path="/profile"
+              element={
+                user
+                  ? <Profile user={user} onEdit={handleProfileUpdate} />
+                  : <Navigate to="/login" />
+              }
+            />
+            <Route
+              path="/profile/settings"
+              element={
+                user
+                  ? <ProfileSettings user={user} onUpdate={handleProfileUpdate} />
+                  : <Navigate to="/login" />
+              }
+            />
+            <Route
+              path="/home"
+              element={
+                user
+                  ? <Navigate to="/" />
+                  : <Navigate to="/login" />
+              }
+            />
+            <Route path="*" element={<Navigate to="/login" />} />
+          </Routes>
         </div>
       </main>
       <Footer />
