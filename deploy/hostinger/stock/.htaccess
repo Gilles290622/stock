@@ -1,0 +1,9 @@
+RewriteEngine On
+
+# API dans le sous-dossier: /stock/api/* vers api/index.php
+RewriteRule ^api/?(.*)$ api/index.php [QSA,L]
+
+# Fallback SPA (toutes les routes front renvoient index.html)
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule . index.html [L]

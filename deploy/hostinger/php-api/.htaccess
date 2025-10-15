@@ -1,11 +1,12 @@
 RewriteEngine On
 
-# API routing: /api/* to /api/index.php
-RewriteCond %{REQUEST_URI} ^/api/ [NC]
-RewriteRule ^api/?(.*)$ /api/index.php [QSA,L]
+# Contexte sous-dossier /stock
+# Si ce .htaccess est placé dans public_html/stock/
 
-# Frontend SPA fallback: serve index.html for non-file, non-api
-RewriteCond %{REQUEST_URI} !^/api/ [NC]
+# API routing local: /stock/api/* vers api/index.php
+RewriteRule ^api/?(.*)$ api/index.php [QSA,L]
+
+# Frontend SPA fallback: servir index.html pour toute route non-fichier/dossier
 RewriteCond %{REQUEST_FILENAME} !-f
 RewriteCond %{REQUEST_FILENAME} !-d
-RewriteRule . /index.html [L]
+RewriteRule . index.html [L]

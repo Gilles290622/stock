@@ -131,15 +131,37 @@ const FRONTEND_DIST = path.join(__dirname, '..', 'frontend', 'dist');
 try {
   if (require('fs').existsSync(FRONTEND_DIST)) {
     FRONTEND_AVAILABLE = true;
-    app.use('/', express.static(FRONTEND_DIST, { index: false }));
-    app.get('/', (req, res) => {
-      res.sendFile(path.join(FRONTEND_DIST, 'index.html'));
-    });
-    // SPA fallback
-    app.get(/^\/(?!api|uploads)(.*)$/, (req, res) => {
-      res.sendFile(path.join(FRONTEND_DIST, 'index.html'));
-    });
-    console.log('[frontend] Build statique servi à la racine /');
+  // Base frontend à la racine pour ce déploiement
+  // (ignorer FRONTEND_BASE pour éviter /stock/stock)
+  let FRONT_BASE = '/';
+    // Normaliser sans slash final (sauf si racine)
+    const baseNoSlash = FRONT_BASE === '/' ? '/' : FRONT_BASE.replace(/\/$/, '');
+
+  // Servir les fichiers statiques sous le bon préfixe
+    app.use(baseNoSlash, express.static(FRONTEND_DIST, { index: false }));
+
+  // Compat: rediriger /stock ou /stock/ vers la racine
+  app.get(/^\/stock\/?$/, (req, res) => res.redirect('/'));
+
+    // Rediriger la racine vers la base si nécessaire
+    if (baseNoSlash !== '/') {
+      app.get('/', (req, res) => res.redirect(baseNoSlash + '/'));
+    }
+
+    // Servir index.html sur la base et fallback SPA sur les routes frontend
+    const INDEX_FILE = path.join(FRONTEND_DIST, 'index.html');
+    if (baseNoSlash === '/') {
+      app.get('/', (req, res) => res.sendFile(INDEX_FILE));
+      app.get(/^(?!\/api|\/uploads).+$/, (req, res) => res.sendFile(INDEX_FILE));
+    } else {
+      app.get(baseNoSlash, (req, res) => res.redirect(baseNoSlash + '/'));
+      app.get(baseNoSlash + '/', (req, res) => res.sendFile(INDEX_FILE));
+      const escaped = baseNoSlash.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const spaRe = new RegExp('^' + escaped + '\\/(?!api|uploads).*$');
+      app.get(spaRe, (req, res) => res.sendFile(INDEX_FILE));
+    }
+
+    console.log(`[frontend] Build statique servi sur base '${baseNoSlash}'`);
   }
 } catch (e) {
   console.warn('[frontend] Static mount error:', e?.message || e);

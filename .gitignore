@@ -19,6 +19,11 @@ frontend/.env
 backend/uploads/
 backend/data/*.sqlite
 backend/data/*.db
+logs/
+backend/logs/
+deploy/hostinger/package/
+deploy/hostinger/package_stock/
+deploy/hostinger/stock-hostinger-upload.zip
 
 # Local data folder (do not commit local databases/backups)
 data/

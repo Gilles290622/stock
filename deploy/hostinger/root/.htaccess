@@ -1,0 +1,8 @@
+RewriteEngine On
+
+# Redirection de la racine vers /stock/
+RewriteCond %{REQUEST_URI} ^/$
+RewriteRule ^$ /stock/ [R=302,L]
+
+# Router /api/* de la racine vers /stock/api/index.php
+RewriteRule ^api/?(.*)$ stock/api/index.php [QSA,L]

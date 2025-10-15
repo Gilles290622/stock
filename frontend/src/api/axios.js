@@ -1,8 +1,17 @@
 import axios from "axios";
 
 // Permet d'overrider la base API en production (ex: autre domaine) via VITE_API_BASE
-// Laisser vide pour utiliser des chemins relatifs (utile en dev avec proxy et en prod même domaine)
-const baseURL = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_BASE) ? import.meta.env.VITE_API_BASE : '';
+// Si non défini, détecte automatiquement le sous-dossier /stock (Hostinger) sinon racine
+let baseURL = '';
+try {
+  const envBase = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_BASE) ? import.meta.env.VITE_API_BASE : '';
+  if (envBase) {
+    baseURL = envBase;
+  } else if (typeof window !== 'undefined') {
+    // App servie à la racine par défaut
+    baseURL = '';
+  }
+} catch {}
 
 const api = axios.create({ baseURL });
 
