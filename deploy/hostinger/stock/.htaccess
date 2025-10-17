@@ -1,9 +1,39 @@
 RewriteEngine On
+RewriteBase /stock/
 
 # API dans le sous-dossier: /stock/api/* vers api/index.php
-RewriteRule ^api/?(.*)$ api/index.php [QSA,L]
+RewriteRule ^api/?(.*)$ api/index.php?route=$1 [QSA,L]
+
+# Servir index.html pour la racine du sous-dossier /stock/
+DirectoryIndex index.html
+RewriteRule ^$ index.html [L]
 
 # Fallback SPA (toutes les routes front renvoient index.html)
 RewriteCond %{REQUEST_FILENAME} !-f
 RewriteCond %{REQUEST_FILENAME} !-d
 RewriteRule . index.html [L]
+
+# Caching des assets (1 an)
+<IfModule mod_expires.c>
+	ExpiresActive On
+	# Les assets Vite sont fingerprintés → long cache
+	ExpiresByType text/css "access plus 1 year"
+	ExpiresByType application/javascript "access plus 1 year"
+	ExpiresByType application/json "access plus 1 year"
+	ExpiresByType image/svg+xml "access plus 1 year"
+	ExpiresByType image/png "access plus 1 year"
+	ExpiresByType image/jpeg "access plus 1 year"
+	ExpiresByType image/webp "access plus 1 year"
+	<IfModule mod_headers.c>
+		<FilesMatch "\.(js|css|json|svg|png|jpg|jpeg|webp)$">
+			Header set Cache-Control "public, max-age=31536000, immutable"
+		</FilesMatch>
+		# index.html courte durée pour permettre les mises à jour
+		<Files "index.html">
+			Header set Cache-Control "no-cache, no-store, must-revalidate"
+		</Files>
+	</IfModule>
+	<Files "index.html">
+		ExpiresActive Off
+	</Files>
+</IfModule>

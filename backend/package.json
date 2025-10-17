@@ -15,6 +15,8 @@
     "migrate:add-categories:mysql": "node scripts/migrate_add_categories_mysql.js",
     "push:remote": "node scripts/push-to-remote.js all --user 7",
   "push:remote:all": "node scripts/push-to-remote.js all --all-users",
+    "push:users": "node scripts/push-to-remote.js users",
+    "export:users-sql": "node scripts/export-users-sql.js",
     "import:categories": "node scripts/import-categories.js",
     "update:designation-categories": "node scripts/update-designations-categories.js 6",
     "pull:clients": "node scripts/pull-from-mysql.js clients",

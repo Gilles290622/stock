@@ -65,20 +65,55 @@ function get_token_payload() {
 }
 
 $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+// Construire un chemin logique stable pour le router
+if (strpos($uri, '/stock/') === 0) { $uri = substr($uri, strlen('/stock')); }
+$path = $uri;
+if (isset($_GET['route']) && $_GET['route'] !== '') {
+  $r = trim($_GET['route']);
+  $r = '/'.ltrim($r, '/');
+  if (strpos($r, '/api/') !== 0) $r = '/api'.$r;
+  $path = $r;
+}
+$path = rtrim($path, '/'); if ($path === '') $path = '/';
 $method = $_SERVER['REQUEST_METHOD'];
 
+// --- Debug route (temporaire): echo path/uri/method/route
+if ($path === '/api/_debug') {
+  $dbg = [
+    'path' => $path,
+    'uri' => $uri,
+    'method' => $method,
+    'route' => isset($_GET['route']) ? $_GET['route'] : null,
+    'qs' => $_GET,
+  ];
+  json($dbg);
+}
+
+// --- Diagnostic: test de connexion DB ---
+if ($path === '/api/db-ping' && $method === 'GET') {
+  try {
+    $pdo = db();
+    $stmt = $pdo->query('SELECT 1');
+    $val = $stmt ? $stmt->fetchColumn() : null;
+    json(['ok' => true, 'select1' => (int)$val]);
+  } catch (Throwable $e) {
+    json(['ok' => false, 'error' => 'db', 'message' => $e->getMessage()], 500);
+  }
+}
+
 // Routing
-if ($uri === '/api/version' && $method === 'GET') {
+if ($path === '/api/version' && $method === 'GET') {
   json(['version' => $config['app_version']]);
 }
 
-if ($uri === '/api/login' && $method === 'POST') {
+if ($path === '/api/login' && $method === 'POST') {
   $body = json_decode(file_get_contents('php://input'), true);
   $identifier = isset($body['identifier']) ? trim($body['identifier']) : '';
   $password = isset($body['password']) ? $body['password'] : '';
   if (!$identifier || !$password) json(['message'=>'Identifiants requis'], 400);
   $pdo = db();
-  $stmt = $pdo->prepare("SELECT u.id, u.email, u.password, p.username, p.role, p.status, p.entreprise FROM users u LEFT JOIN profiles p ON u.id = p.user_id WHERE u.email = ? OR p.username = ? LIMIT 1");
+  // Ne pas référencer une colonne éventuellement absente comme p.entreprise
+  $stmt = $pdo->prepare("SELECT u.id, u.email, u.password, p.username, p.role, p.status FROM users u LEFT JOIN profiles p ON u.id = p.user_id WHERE u.email = ? OR p.username = ? LIMIT 1");
   $stmt->execute([$identifier, $identifier]);
   $u = $stmt->fetch();
   if (!$u) json(['message' => 'Utilisateur introuvable'], 404);
@@ -87,22 +122,86 @@ if ($uri === '/api/login' && $method === 'POST') {
   $payload = ['id'=>$u['id'],'email'=>$u['email'],'username'=>$u['username'],'iat'=>time(),'exp'=>time()+7200];
   $token = jwt_sign($payload);
   json(['token'=>$token, 'user'=>[
-    'id'=>$u['id'], 'email'=>$u['email'], 'username'=>$u['username'], 'role'=>$u['role'] ?: 'user', 'status'=>$u['status'] ?: 'active', 'entreprise'=>$u['entreprise'] ?: ''
+    'id'=>$u['id'], 'email'=>$u['email'], 'username'=>$u['username'], 'role'=>$u['role'] ?: 'user', 'status'=>$u['status'] ?: 'active', 'entreprise'=>''
   ]]);
 }
 
-if ($uri === '/api/me' && $method === 'GET') {
+// Register (création d'un utilisateur + profil)
+if ($path === '/api/register' && $method === 'POST') {
+  $body = json_decode(file_get_contents('php://input'), true) ?: [];
+  $full_name = isset($body['full_name']) ? trim($body['full_name']) : '';
+  $email = isset($body['email']) ? trim($body['email']) : '';
+  $username = isset($body['username']) ? trim($body['username']) : '';
+  $password = isset($body['password']) ? (string)$body['password'] : '';
+  // 'entreprise' est optionnel et peut ne pas exister en base; on l'ignore côté insertion
+  $entreprise = isset($body['entreprise']) ? trim((string)$body['entreprise']) : null;
+
+  if ($full_name === '' || $email === '' || $username === '' || $password === '') {
+    json(['message' => 'full_name, email, username et password sont requis'], 400);
+  }
+  if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+    json(['message' => 'Email invalide'], 400);
+  }
+  if (strlen($password) < 6) {
+    json(['message' => 'Mot de passe trop court (min 6)'], 400);
+  }
+  if (!preg_match('/^[A-Za-z0-9_.-]{3,}$/', $username)) {
+    json(['message' => 'Username invalide (min 3, lettres/chiffres/._-)'], 400);
+  }
+
+  $pdo = db();
+  try {
+    $pdo->beginTransaction();
+    // Unicité
+    $stmt = $pdo->prepare('SELECT id FROM users WHERE email = ? LIMIT 1');
+    $stmt->execute([$email]);
+    if ($stmt->fetch()) { $pdo->rollBack(); json(['message' => 'Email déjà utilisé'], 409); }
+
+    $stmt = $pdo->prepare('SELECT user_id FROM profiles WHERE username = ? LIMIT 1');
+    $stmt->execute([$username]);
+    if ($stmt->fetch()) { $pdo->rollBack(); json(['message' => 'Username déjà utilisé'], 409); }
+
+    // Hash
+    $hash = password_hash($password, PASSWORD_BCRYPT);
+    // Insert user
+    $stmt = $pdo->prepare('INSERT INTO users (full_name, email, password, created_at) VALUES (?, ?, ?, NOW())');
+    $stmt->execute([$full_name, $email, $hash]);
+    $uid = (int)$pdo->lastInsertId();
+
+  // Insert profile (sans colonne "entreprise" qui peut ne pas exister)
+  $stmt = $pdo->prepare('INSERT INTO profiles (user_id, username, role, status) VALUES (?, ?, ?, ?)');
+  $stmt->execute([$uid, $username, 'user', 'active']);
+
+    $pdo->commit();
+    $payload = ['id'=>$uid,'email'=>$email,'username'=>$username,'iat'=>time(),'exp'=>time()+7200];
+    $token = jwt_sign($payload);
+    json(['token'=>$token, 'user'=>[
+      'id'=>$uid, 'email'=>$email, 'username'=>$username, 'role'=>'user', 'status'=>'active', 'entreprise'=>''
+    ]], 201);
+  } catch (Throwable $e) {
+    try { $pdo->rollBack(); } catch (Throwable $_) {}
+    // Conflits uniques éventuels
+    $msg = $e->getMessage();
+    if (stripos($msg, 'duplicate') !== false || stripos($msg, 'unique') !== false) {
+      json(['message' => 'Conflit de données (email ou username déjà utilisés)'], 409);
+    }
+    json(['message' => 'Erreur serveur', 'error' => $msg], 500);
+  }
+}
+
+if ($path === '/api/me' && $method === 'GET') {
   $p = get_token_payload(); if (!$p) json(['error'=>'Token manquant ou invalide'], 401);
   $pdo = db();
-  $stmt = $pdo->prepare("SELECT u.id, u.email, p.username, p.entreprise, p.role, p.status FROM users u LEFT JOIN profiles p ON u.id=p.user_id WHERE u.id = ? LIMIT 1");
+  // Ne pas sélectionner p.entreprise si la colonne n'existe pas
+  $stmt = $pdo->prepare("SELECT u.id, u.email, p.username, p.role, p.status FROM users u LEFT JOIN profiles p ON u.id=p.user_id WHERE u.id = ? LIMIT 1");
   $stmt->execute([$p['id']]);
   $u = $stmt->fetch(); if (!$u) json(['error'=>'Utilisateur introuvable'], 404);
   json(['user'=>[
-    'id'=>$u['id'], 'email'=>$u['email'], 'username'=>$u['username'], 'role'=>$u['role'] ?: 'user', 'status'=>$u['status'] ?: 'active', 'entreprise'=>$u['entreprise'] ?: ''
+    'id'=>$u['id'], 'email'=>$u['email'], 'username'=>$u['username'], 'role'=>$u['role'] ?: 'user', 'status'=>$u['status'] ?: 'active', 'entreprise'=>''
   ]]);
 }
 
-if ($uri === '/api/clients/count' && $method === 'GET') {
+if ($path === '/api/clients/count' && $method === 'GET') {
   $p = get_token_payload(); if (!$p) json(['error'=>'Token manquant ou invalide'], 401);
   $pdo = db();
   $stmt = $pdo->prepare("SELECT COUNT(*) as c FROM stock_clients WHERE user_id = ?");
@@ -111,7 +210,7 @@ if ($uri === '/api/clients/count' && $method === 'GET') {
   json(['count' => intval($row ? $row['c'] : 0)]);
 }
 
-if ($uri === '/api/designations/count' && $method === 'GET') {
+if ($path === '/api/designations/count' && $method === 'GET') {
   $p = get_token_payload(); if (!$p) json(['error'=>'Token manquant ou invalide'], 401);
   $pdo = db();
   $stmt = $pdo->prepare("SELECT COUNT(*) as c FROM stock_designations WHERE user_id = ?");
@@ -120,7 +219,7 @@ if ($uri === '/api/designations/count' && $method === 'GET') {
   json(['count' => intval($row ? $row['c'] : 0)]);
 }
 
-if ($uri === '/api/clients/search' && $method === 'GET') {
+if ($path === '/api/clients/search' && $method === 'GET') {
   $p = get_token_payload(); if (!$p) json(['error'=>'Token manquant ou invalide'], 401);
   $q = isset($_GET['q']) ? trim($_GET['q']) : '';
   $pdo = db();
@@ -130,7 +229,7 @@ if ($uri === '/api/clients/search' && $method === 'GET') {
   json($stmt->fetchAll());
 }
 
-if ($uri === '/api/designations/search' && $method === 'GET') {
+if ($path === '/api/designations/search' && $method === 'GET') {
   $p = get_token_payload(); if (!$p) json(['error'=>'Token manquant ou invalide'], 401);
   $q = isset($_GET['q']) ? trim($_GET['q']) : '';
   $pdo = db();
@@ -140,7 +239,7 @@ if ($uri === '/api/designations/search' && $method === 'GET') {
   json($stmt->fetchAll());
 }
 
-if ($uri === '/api/stockFlux' && $method === 'GET') {
+if ($path === '/api/stockFlux' && $method === 'GET') {
   $p = get_token_payload(); if (!$p) json(['error'=>'Token manquant ou invalide'], 401);
   $date = isset($_GET['date']) ? $_GET['date'] : date('Y-m-d');
   $pdo = db();

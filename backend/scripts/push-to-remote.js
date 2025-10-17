@@ -29,10 +29,10 @@ function parseArgs(argv) {
     if (a === '--all-users') { args.allUsers = true; continue; }
     const m = /^--user=(\d+)$/.exec(a); if (m) { args.user = parseInt(m[1], 10); continue; }
   }
-  const valid = ['categories', 'clients', 'designations', 'mouvements', 'paiements', 'depenses', 'all'];
+  const valid = ['users', 'categories', 'clients', 'designations', 'mouvements', 'paiements', 'depenses', 'all'];
   if (!valid.includes(args.entity)) throw new Error('Entité invalide. Utilisez: ' + valid.join('|'));
   // Si pas d'user explicite et entité dépendante d'un user, on bascule en mode allUsers
-  if (args.entity !== 'categories' && (!Number.isInteger(args.user) || args.user < 1)) {
+  if (!['categories','users'].includes(args.entity) && (!Number.isInteger(args.user) || args.user < 1)) {
     args.allUsers = true;
   }
   return args;
@@ -93,6 +93,68 @@ async function pushCategories() {
   } finally {
     conn.release();
   }
+}
+
+async function ensureRemoteProfilesSchema(conn) {
+  try {
+    await conn.execute(
+      `CREATE TABLE IF NOT EXISTS profiles (
+         id INT AUTO_INCREMENT PRIMARY KEY,
+         user_id INT NOT NULL UNIQUE,
+         username VARCHAR(190) UNIQUE,
+         role VARCHAR(50) DEFAULT 'user',
+         status VARCHAR(50) DEFAULT 'active',
+         entreprise VARCHAR(255) NULL,
+         created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+         CONSTRAINT fk_profiles_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
+    );
+  } catch (e) {
+    console.warn('[remote] CREATE TABLE profiles ignoré:', e && (e.message || e));
+  }
+}
+
+async function pushUsersAll() {
+  // Synchronise tous les utilisateurs + profils (username/role/status/entreprise)
+  const [loc] = await pool.query(
+    `SELECT u.id, u.full_name, u.email, u.password,
+            p.username, p.role, p.status, NULL as entreprise
+       FROM users u
+  LEFT JOIN profiles p ON p.user_id = u.id
+      ORDER BY u.id ASC`
+  );
+  // Note: entreprise côté local peut être dans users selon migrations; si présent, mapper ici.
+  try {
+    const conn = await remotePool.getConnection();
+    try {
+      await ensureRemoteProfilesSchema(conn);
+      await conn.beginTransaction();
+      for (const u of loc) {
+        await conn.execute(
+          `INSERT INTO users (id, full_name, email, password)
+           VALUES (?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE full_name=VALUES(full_name), email=VALUES(email), password=VALUES(password)`,
+          [u.id, u.full_name || '', u.email || `user${u.id}@local`, u.password || '']
+        );
+        // Upsert profil
+        await conn.execute(
+          `INSERT INTO profiles (user_id, username, role, status, entreprise)
+           VALUES (?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE username=VALUES(username), role=VALUES(role), status=VALUES(status), entreprise=VALUES(entreprise)`,
+          [u.id, u.username || null, u.role || 'user', u.status || 'active', u.entreprise || null]
+        );
+      }
+      await conn.commit();
+    } catch (e) {
+      try { await conn.rollback(); } catch {}
+      throw e;
+    } finally {
+      conn.release();
+    }
+  } catch (e) {
+    throw e;
+  }
+  return { users: loc.length };
 }
 
 async function pushClients(userId, _rconn) {
@@ -331,13 +393,19 @@ async function main() {
   const rconn = await remotePool.getConnection();
   try {
     const result = {};
+    if (entity === 'users' || entity === 'all') {
+      console.log('> Pushing users & profiles ...');
+      const r = await pushUsersAll();
+      result.users = r.users;
+      console.log('Pushed users:', r.users);
+    }
     if (entity === 'categories' || entity === 'all') {
       console.log('> Pushing categories ...');
       result.categories = await pushCategories();
       console.log('Pushed categories:', result.categories);
     }
     const pushForUser = async (uid) => {
-  await upsertRemoteUser(uid);
+      await upsertRemoteUser(uid);
       if (entity === 'clients' || entity === 'all') {
         const n = await pushClients(uid);
         result.clients = (result.clients || 0) + n;

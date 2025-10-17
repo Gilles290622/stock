@@ -8,8 +8,13 @@ try {
   if (envBase) {
     baseURL = envBase;
   } else if (typeof window !== 'undefined') {
-    // App servie à la racine par défaut
-    baseURL = '';
+    // Si l'app est servie depuis /stock/, préfixer automatiquement les API (ex: /stock/api)
+    const path = window.location.pathname || '/';
+    if (path.startsWith('/stock/')) {
+      baseURL = '/stock';
+    } else {
+      baseURL = '';
+    }
   }
 } catch {}
 

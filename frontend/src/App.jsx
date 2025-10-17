@@ -239,8 +239,22 @@ function AppContent() {
 }
 
 export default function App() {
+  // Aligner le basename avec la base Vite: en prod '/stock/', en dev '/'
+  let basename = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.BASE_URL) ? import.meta.env.BASE_URL : '/';
+  // En local (backend sert aussi à la racine), si le chemin actuel ne commence pas par /stock,
+  // on force le basename à '' pour éviter /stock/ dans les URLs (ex: http://stock/admin)
+  try {
+    if (typeof window !== 'undefined') {
+      const p = window.location && window.location.pathname ? window.location.pathname : '/';
+      if (!p.startsWith('/stock/')) {
+        basename = '/';
+      }
+    }
+  } catch {}
+  // BrowserRouter attend un basename sans slash final
+  const normalizedBase = (basename || '/').replace(/\/$/, '');
   return (
-    <Router>
+    <Router basename={normalizedBase}>
       <AppContent />
     </Router>
   );

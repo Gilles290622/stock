@@ -1,4 +1,6 @@
 import React, { useState } from "react";
+import { Link } from "react-router-dom";
+import api from "../api/axios";
 
 export default function Register({ onRegister }) {
   const [email, setEmail] = useState("");
@@ -15,20 +17,16 @@ export default function Register({ onRegister }) {
     setLoading(true);
 
     try {
-      const res = await fetch("/api/register", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, username, password, full_name: fullName, numero }),
-      });
-      const data = await res.json();
-      if (res.ok && data.token) {
+      const { data } = await api.post('/api/register', { email, username, password, full_name: fullName, numero });
+      if (data?.token) {
         localStorage.setItem("token", data.token);
         if (onRegister) onRegister(data.user?.username || data.user?.email || "User", data.user);
       } else {
-        setError(data.message || "Erreur lors de l'inscription");
+        setError(data?.message || "Erreur lors de l'inscription");
       }
-    } catch {
-      setError("Erreur de connexion au serveur");
+    } catch (e) {
+      const msg = e?.response?.data?.message || e?.message || "Erreur de connexion au serveur";
+      setError(msg);
     } finally {
       setLoading(false);
     }
@@ -100,9 +98,9 @@ export default function Register({ onRegister }) {
           {loading ? "Création..." : "Créer un compte"}
         </button>
         <div className="text-center mt-4">
-          <a href="/login" className="text-green-600 hover:underline text-sm">
+          <Link to="/login" className="text-green-600 hover:underline text-sm">
             Déjà un compte ? Se connecter
-          </a>
+          </Link>
         </div>
       </form>
     </div>

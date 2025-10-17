@@ -32,6 +32,18 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Alias pour compat local: rediriger /stock/api/* et /stock/uploads/* vers /api/* et /uploads/*
+app.use((req, _res, next) => {
+  if (req.url.startsWith('/stock/api/')) {
+    req.url = req.url.replace('/stock/api/', '/api/');
+  } else if (req.url === '/stock/api') {
+    req.url = '/api';
+  } else if (req.url.startsWith('/stock/uploads/')) {
+    req.url = req.url.replace('/stock/uploads/', '/uploads/');
+  }
+  next();
+});
+
 // Diagnose remote replication availability
 if (remotePool) {
   console.log('[replication] Remote replication ENABLED ->', process.env.REMOTE_DB_HOST, process.env.REMOTE_DB_NAME);
@@ -125,74 +137,70 @@ app.post('/api/upload-logo', authenticateToken, (req, res, next) => {
 // Note: remove any duplicate definition of /api/update-profile below if you mount the route file above.
 // If you don't have routes/update-profile.js, re-add a secured handler here using authenticateToken.
 
-// Serve frontend à la racine (/) en prod ou via Vite middleware en dev.
+// Serve frontend sous /stock/ (aligné avec Vite base '/stock/') en prod, ou via Vite middleware en dev.
 let FRONTEND_AVAILABLE = false;
 const FRONTEND_DIST = path.join(__dirname, '..', 'frontend', 'dist');
 try {
   if (require('fs').existsSync(FRONTEND_DIST)) {
     FRONTEND_AVAILABLE = true;
-  // Base frontend à la racine pour ce déploiement
-  // (ignorer FRONTEND_BASE pour éviter /stock/stock)
-  let FRONT_BASE = '/';
-    // Normaliser sans slash final (sauf si racine)
-    const baseNoSlash = FRONT_BASE === '/' ? '/' : FRONT_BASE.replace(/\/$/, '');
+  // Servir les assets et fichiers statiques sous /stock ET à la racine
+  app.use('/stock', express.static(FRONTEND_DIST, { index: false }));
+  app.use('/', express.static(FRONTEND_DIST, { index: false }));
 
-  // Servir les fichiers statiques sous le bon préfixe
-    app.use(baseNoSlash, express.static(FRONTEND_DIST, { index: false }));
+    // Index principal sous /stock et /stock/
+    app.get(['/stock', '/stock/'], (req, res) => {
+      res.sendFile(path.join(FRONTEND_DIST, 'index.html'));
+    });
 
-  // Compat: rediriger /stock ou /stock/ vers la racine
-  app.get(/^\/stock\/?$/, (req, res) => res.redirect('/'));
+    // SPA fallback: toutes les routes non-API/non-uploads sous /stock/* renvoient index.html
+    app.get(/^\/stock\/(?!api|uploads)(.*)$/, (req, res) => {
+      res.sendFile(path.join(FRONTEND_DIST, 'index.html'));
+    });
 
-    // Rediriger la racine vers la base si nécessaire
-    if (baseNoSlash !== '/') {
-      app.get('/', (req, res) => res.redirect(baseNoSlash + '/'));
-    }
+    // Servir aussi l'index à la racine locale pour avoir /admin au lieu de /stock/admin
+    app.get(['/', ''], (req, res) => {
+      res.sendFile(path.join(FRONTEND_DIST, 'index.html'));
+    });
+    // Fallback SPA racine (exclut /api et /uploads)
+    app.get(/^\/(?!api|uploads)(.*)$/, (req, res) => {
+      res.sendFile(path.join(FRONTEND_DIST, 'index.html'));
+    });
 
-    // Servir index.html sur la base et fallback SPA sur les routes frontend
-    const INDEX_FILE = path.join(FRONTEND_DIST, 'index.html');
-    if (baseNoSlash === '/') {
-      app.get('/', (req, res) => res.sendFile(INDEX_FILE));
-      app.get(/^(?!\/api|\/uploads).+$/, (req, res) => res.sendFile(INDEX_FILE));
-    } else {
-      app.get(baseNoSlash, (req, res) => res.redirect(baseNoSlash + '/'));
-      app.get(baseNoSlash + '/', (req, res) => res.sendFile(INDEX_FILE));
-      const escaped = baseNoSlash.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const spaRe = new RegExp('^' + escaped + '\\/(?!api|uploads).*$');
-      app.get(spaRe, (req, res) => res.sendFile(INDEX_FILE));
-    }
-
-    console.log(`[frontend] Build statique servi sur base '${baseNoSlash}'`);
+    console.log('[frontend] Build statique servi sous /stock/');
   }
 } catch (e) {
   console.warn('[frontend] Static mount error:', e?.message || e);
 }
 
-// Vite middleware (développement) : monte le front directement sur le même port (80 / 3001)
+// Vite middleware (développement) : monte le front directement sur /stock sur le même port (80 / 3001)
 if (!FRONTEND_AVAILABLE && process.env.NODE_ENV !== 'production') {
   (async () => {
     try {
       const { createServer } = require('vite');
       const vite = await createServer({
         root: path.join(__dirname, '..', 'frontend'),
-        base: '/',
+        base: '/stock/',
         server: { middlewareMode: true },
         appType: 'spa'
       });
       // Inject Vite middlewares (handles HMR, assets, etc.)
-      app.use(vite.middlewares);
+      app.use('/stock', vite.middlewares);
       const fsPromises = require('fs').promises;
       const INDEX_PATH = path.join(__dirname, '..', 'frontend', 'index.html');
       async function serveIndex(req, res, next) {
         try {
           let html = await fsPromises.readFile(INDEX_PATH, 'utf-8');
             // transformIndexHtml applique HMR client + réécrit base
-      html = await vite.transformIndexHtml('/', html);
+      html = await vite.transformIndexHtml('/stock/', html);
           res.status(200).set({ 'Content-Type': 'text/html' }).end(html);
         } catch (e) { next(e); }
       }
+  app.get('/stock/', serveIndex);
+  app.get(/^\/stock\/(?!api|uploads)(.*)$/, serveIndex);
+  // Dev: servir aussi à la racine pour /admin
   app.get('/', serveIndex);
   app.get(/^\/(?!api|uploads)(.*)$/, serveIndex);
-  console.log('[frontend] Vite dev middleware actif sur / (HMR)');
+  console.log('[frontend] Vite dev middleware actif sur /stock (HMR)');
     } catch (e) {
       console.warn('[frontend] Vite middleware non initialisé:', e?.message || e);
     }
