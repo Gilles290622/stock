@@ -4,28 +4,50 @@ const pool = require('../config/db');
 const remotePool = require('../config/remoteDb');
 const authenticateToken = require('../middleware/auth');
 
+async function getEntrepriseContext(userId) {
+  const [rows] = await pool.execute(
+    `SELECT u.entreprise_id AS entId, COALESCE(u.entreprise, e.name) AS entName, e.global_code AS entGlobal
+       FROM users u
+       LEFT JOIN stock_entreprise e ON e.id = u.entreprise_id
+      WHERE u.id = ?
+      LIMIT 1`,
+    [userId]
+  );
+  const r = rows && rows[0];
+  return { entId: (r && r.entId) ?? null, entName: (r && r.entName) || null, entGlobal: (r && r.entGlobal) ?? null };
+}
+
 // IMPORTANT: /search AVANT /:id
 
 // Liste complète (option q) sans limite
 router.get('/all', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
+  const { entGlobal, entId, entName } = await getEntrepriseContext(userId);
     const q = (req.query.q || '').trim();
     if (q) {
       const like = `%${q}%`;
       const [rows] = await pool.execute(
-        `SELECT id, name, current_stock
-           FROM stock_designations
-          WHERE user_id = ? AND LOWER(name) LIKE LOWER(?)
-          ORDER BY name`,
-        [userId, like]
+        `SELECT sd.id, sd.name, sd.current_stock
+           FROM stock_designations sd
+          WHERE (sd.global_id = ? OR (? IS NULL AND sd.user_id IN (
+                   SELECT id FROM users u2 WHERE COALESCE(u2.entreprise,'') = ?
+                 )))
+            AND LOWER(sd.name) LIKE LOWER(?)
+          ORDER BY sd.name`,
+        [entGlobal, entGlobal, entName || '', like]
       );
       try { console.log('[log][designations.all] user=%s q="%s" count=%d ids=%j', userId, q, rows.length, rows.map(r=>r.id).slice(0,20)); } catch {}
       return res.json(rows);
     } else {
       const [rows] = await pool.execute(
-        'SELECT id, name, current_stock FROM stock_designations WHERE user_id = ? ORDER BY name',
-        [userId]
+        `SELECT sd.id, sd.name, sd.current_stock
+           FROM stock_designations sd
+          WHERE (sd.global_id = ? OR (? IS NULL AND sd.user_id IN (
+                   SELECT id FROM users u2 WHERE COALESCE(u2.entreprise,'') = ?
+                 )))
+          ORDER BY sd.name`,
+        [entGlobal, entGlobal, entName || '']
       );
       try { console.log('[log][designations.all] user=%s count=%d ids(sample)=%j', userId, rows.length, rows.map(r=>r.id).slice(0,20)); } catch {}
       return res.json(rows);
@@ -40,20 +62,30 @@ router.get('/all', authenticateToken, async (req, res) => {
 router.get('/count', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
+  const { entGlobal, entId, entName } = await getEntrepriseContext(userId);
     const q = (req.query.q || '').trim();
     if (q) {
       const like = `%${q}%`;
       const [rows] = await pool.execute(
-        'SELECT COUNT(*) AS count FROM stock_designations WHERE user_id = ? AND LOWER(name) LIKE LOWER(?)',
-        [userId, like]
+        `SELECT COUNT(*) AS count
+           FROM stock_designations sd
+          WHERE (sd.global_id = ? OR (? IS NULL AND sd.user_id IN (
+                   SELECT id FROM users u2 WHERE COALESCE(u2.entreprise,'') = ?
+                 )))
+            AND LOWER(sd.name) LIKE LOWER(?)`,
+        [entGlobal, entGlobal, entName || '', like]
       );
       const count = rows && rows[0] ? (rows[0].count || rows[0].COUNT || rows[0]['COUNT(*)'] || 0) : 0;
       try { console.log('[log][designations.count] user=%s q="%s" count=%d', userId, q, count); } catch {}
       return res.json({ count });
     } else {
       const [rows] = await pool.execute(
-        'SELECT COUNT(*) AS count FROM stock_designations WHERE user_id = ?',
-        [userId]
+        `SELECT COUNT(*) AS count
+           FROM stock_designations sd
+          WHERE (sd.global_id = ? OR (? IS NULL AND sd.user_id IN (
+                   SELECT id FROM users u2 WHERE COALESCE(u2.entreprise,'') = ?
+                 )))`,
+        [entGlobal, entGlobal, entName || '']
       );
       const count = rows && rows[0] ? (rows[0].count || rows[0].COUNT || rows[0]['COUNT(*)'] || 0) : 0;
       try { console.log('[log][designations.count] user=%s count=%d', userId, count); } catch {}
@@ -72,15 +104,19 @@ router.get('/search', authenticateToken, async (req, res) => {
     if (q.length === 0) return res.json([]);
 
     const userId = req.user.id;
+    const { entGlobal, entId, entName } = await getEntrepriseContext(userId);
     const like = `%${q}%`;
 
     const [rows] = await pool.execute(
-      `SELECT id, name, current_stock
-         FROM stock_designations
-        WHERE user_id = ? AND LOWER(name) LIKE LOWER(?)
-        ORDER BY name
+      `SELECT sd.id, sd.name, sd.current_stock
+         FROM stock_designations sd
+        WHERE (sd.global_id = ? OR (? IS NULL AND sd.user_id IN (
+                 SELECT id FROM users u2 WHERE COALESCE(u2.entreprise,'') = ?
+               )))
+          AND LOWER(sd.name) LIKE LOWER(?)
+        ORDER BY sd.name
         LIMIT 10`,
-      [userId, like]
+      [entGlobal, entGlobal, entName || '', like]
     );
     try { console.log('[log][designations.search] user=%s q="%s" count=%d ids=%j', userId, q, rows.length, rows.map(r=>r.id)); } catch {}
     res.json(rows);
@@ -94,9 +130,16 @@ router.get('/search', authenticateToken, async (req, res) => {
 router.get('/', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
+  const { entGlobal, entId, entName } = await getEntrepriseContext(userId);
     const [rows] = await pool.execute(
-      'SELECT id, name, current_stock FROM stock_designations WHERE user_id = ? ORDER BY name LIMIT 50',
-      [userId]
+      `SELECT sd.id, sd.name, sd.current_stock
+         FROM stock_designations sd
+        WHERE (sd.global_id = ? OR (? IS NULL AND sd.user_id IN (
+                 SELECT id FROM users u2 WHERE COALESCE(u2.entreprise,'') = ?
+               )))
+        ORDER BY sd.name
+        LIMIT 50`,
+      [entGlobal, entGlobal, entName || '']
     );
     try { console.log('[log][designations.list] user=%s count=%d ids=%j', userId, rows.length, rows.map(r=>r.id)); } catch {}
     res.json(rows);
@@ -115,9 +158,15 @@ router.get('/:id', authenticateToken, async (req, res) => {
     }
 
     const userId = req.user.id;
+  const { entGlobal, entId, entName } = await getEntrepriseContext(userId);
     const [rows] = await pool.execute(
-      'SELECT id, name, current_stock FROM stock_designations WHERE id = ? AND user_id = ?',
-      [id, userId]
+      `SELECT sd.id, sd.name, sd.current_stock
+         FROM stock_designations sd
+        WHERE sd.id = ?
+          AND (sd.global_id = ? OR (? IS NULL AND sd.user_id IN (
+               SELECT id FROM users u2 WHERE COALESCE(u2.entreprise,'') = ?
+             )))`,
+      [id, entGlobal, entGlobal, entName || '']
     );
     try { console.log('[log][designations.get] user=%s id=%s found=%s', userId, id, rows.length>0); } catch {}
     if (rows.length === 0) {
@@ -147,9 +196,14 @@ router.post('/', authenticateToken, async (req, res) => {
 
     // Créer
     try {
+      const [ctxRows] = await pool.execute(
+        `SELECT e.global_code AS entGlobal FROM users u LEFT JOIN stock_entreprise e ON e.id = u.entreprise_id WHERE u.id = ?`,
+        [userId]
+      );
+      const entGlobal = (ctxRows && ctxRows[0] && ctxRows[0].entGlobal) ?? null;
       const [ins] = await pool.execute(
-        'INSERT INTO stock_designations (user_id, name, current_stock) VALUES (?, ?, 0)',
-        [userId, name]
+        'INSERT INTO stock_designations (user_id, name, current_stock, global_id) VALUES (?, ?, 0, ?)',
+        [userId, name, entGlobal]
       );
       const payload = { id: ins.insertId, name, current_stock: 0 };
       try { console.log('[log][designations.create] user=%s id=%s name=%j', userId, payload.id, name); } catch {}
@@ -175,10 +229,10 @@ router.post('/', authenticateToken, async (req, res) => {
               }
             }
             await rconn.execute(
-              `INSERT INTO stock_designations (id, user_id, name, current_stock)
-               VALUES (?, ?, ?, ?)
-               ON DUPLICATE KEY UPDATE name = VALUES(name), current_stock = VALUES(current_stock)`,
-              [payload.id, userId, name, 0]
+              `INSERT INTO stock_designations (id, user_id, name, current_stock, global_id)
+               VALUES (?, ?, ?, ?, ?)
+               ON DUPLICATE KEY UPDATE name = VALUES(name), current_stock = VALUES(current_stock), global_id = VALUES(global_id)`,
+              [payload.id, userId, name, 0, entGlobal]
             );
           } catch (e) {
             console.warn('Remote push (designation create) skipped:', e?.message || e);
@@ -254,11 +308,17 @@ router.patch('/:id', authenticateToken, async (req, res) => {
               }
             }
           }
+          // also replicate global_id for parity
+          let entGlobal = null;
+          try {
+            const [[ctx]] = await pool.query(`SELECT e.global_code AS entGlobal FROM users u LEFT JOIN stock_entreprise e ON e.id = u.entreprise_id WHERE u.id = ?`, [userId]);
+            entGlobal = ctx ? ctx.entGlobal : null;
+          } catch {}
           await rconn.execute(
-            `INSERT INTO stock_designations (id, user_id, name, current_stock)
-             VALUES (?, ?, ?, ?)
-             ON DUPLICATE KEY UPDATE name = VALUES(name)`,
-            [updated.id, userId, updated.name, Number(updated.current_stock || 0)]
+            `INSERT INTO stock_designations (id, user_id, name, current_stock, global_id)
+             VALUES (?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE name = VALUES(name), current_stock = VALUES(current_stock), global_id = VALUES(global_id)`,
+            [updated.id, userId, updated.name, Number(updated.current_stock || 0), entGlobal]
           );
         } catch (e) {
           console.warn('Remote push (designation update) skipped:', e?.message || e);

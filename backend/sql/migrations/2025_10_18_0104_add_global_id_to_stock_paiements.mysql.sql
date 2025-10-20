@@ -1,0 +1,1 @@
+ALTER TABLE stock_paiements ADD COLUMN global_id INT NULL;

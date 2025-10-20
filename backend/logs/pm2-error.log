@@ -1,0 +1,5 @@
+[remoteDb] Ping distant échoué (continuation en mode local): getaddrinfo ENOTFOUND auth-db964.hstgr.io
+[remoteDb] Ping distant échoué (continuation en mode local): connect ETIMEDOUT
+[remoteDb] Ping distant échoué (continuation en mode local): getaddrinfo ENOTFOUND auth-db964.hstgr.io
+[remoteDb] Ping distant échoué (continuation en mode local): getaddrinfo ENOTFOUND auth-db964.hstgr.io
+[remoteDb] Ping distant échoué (continuation en mode local): connect ETIMEDOUT

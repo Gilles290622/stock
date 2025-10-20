@@ -159,9 +159,11 @@ const StockMouvements = ({ user }) => {
 
   const fetchCounts = async () => {
     try {
+      const t = localStorage.getItem('token');
+      const headers = t ? { Authorization: `Bearer ${t}` } : undefined;
       const [cCnt, pCnt] = await Promise.all([
-        api.get('/api/clients/count'),
-        api.get('/api/designations/count')
+        api.get('/api/clients/count', { headers }),
+        api.get('/api/designations/count', { headers })
       ]);
       setClientsTotal(Number(cCnt?.data?.count ?? 0));
       setProductsTotal(Number(pCnt?.data?.count ?? 0));
@@ -229,9 +231,10 @@ const fetchFeed = async (value) => {
 
 
   useEffect(() => {
-  fetchMouvementsDuJour();
-    fetchCounts();
-}, []);
+    fetchMouvementsDuJour();
+    // S'assurer que le token est présent avant d'appeler les counts (évite des erreurs 401 en prod)
+    setTimeout(() => fetchCounts(), 0);
+  }, []);
 
   // Dériver la liste des mouvements (utile pour options, modales, etc.)
   const mouvements = useMemo(() => feed.filter((f) => f.kind === "mouvement"), [feed]);

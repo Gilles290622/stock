@@ -7,6 +7,15 @@ const authenticateToken = require('../middleware/auth');
 router.get('/', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
+    // Entreprise scoping: get entreprise_id and legacy name
+    const [[urow]] = await pool.query(
+      `SELECT u.entreprise_id AS entId, COALESCE(e.name, u.entreprise) AS entName, e.global_code AS entGlobal
+         FROM users u LEFT JOIN stock_entreprise e ON e.id = u.entreprise_id
+        WHERE u.id = ? LIMIT 1`, [userId]
+    );
+    const entId = urow ? urow.entId : null;
+    const entName = urow ? (urow.entName || '') : '';
+    const entGlobal = urow ? urow.entGlobal : null;
     const dateJour = req.query.date || new Date().toISOString().slice(0, 10);
 
     // On récupère le flux complet pour l'utilisateur
@@ -33,11 +42,14 @@ router.get('/', authenticateToken, async (req, res) => {
           sm.stockR AS stockR,
           NULL AS mouvement_id
         FROM stock_mouvements sm
+        
         LEFT JOIN stock_designations d
           ON d.id = sm.designation_id AND d.user_id = sm.user_id
         LEFT JOIN stock_clients c
           ON c.id = sm.client_id AND c.user_id = sm.user_id
-        WHERE sm.user_id = ?
+        WHERE (sm.global_id = ? OR (? IS NULL AND sm.user_id IN (
+                 SELECT id FROM users u2 WHERE COALESCE(u2.entreprise,'') = ?
+               )))
           AND strftime('%Y-%m-%d', sm.date) = ?
 
         UNION ALL
@@ -61,12 +73,16 @@ router.get('/', authenticateToken, async (req, res) => {
           sp.mouvement_id AS mouvement_id
         FROM stock_paiements sp
         JOIN stock_mouvements sm
-          ON sm.id = sp.mouvement_id AND sm.user_id = ?
+          ON sm.id = sp.mouvement_id
+        
         LEFT JOIN stock_designations d
           ON d.id = sm.designation_id AND d.user_id = sm.user_id
         LEFT JOIN stock_clients c
           ON c.id = sm.client_id AND c.user_id = sm.user_id
-        WHERE strftime('%Y-%m-%d', sp.date) = ?
+        WHERE (sm.global_id = ? OR (? IS NULL AND sm.user_id IN (
+                 SELECT id FROM users u3 WHERE COALESCE(u3.entreprise,'') = ?
+               )))
+          AND strftime('%Y-%m-%d', sp.date) = ?
 
         UNION ALL
 
@@ -88,11 +104,14 @@ router.get('/', authenticateToken, async (req, res) => {
           NULL AS stockR,
           NULL AS mouvement_id
         FROM stock_depenses sd
-        WHERE sd.user_id = ? AND strftime('%Y-%m-%d', sd.date) = ?
+        WHERE (sd.global_id = ? OR (? IS NULL AND sd.user_id IN (
+                 SELECT id FROM users u4 WHERE COALESCE(u4.entreprise,'') = ?
+               )))
+          AND strftime('%Y-%m-%d', sd.date) = ?
       ) AS t
       ORDER BY created_at ASC, id ASC
       `,
-      [userId, dateJour, userId, dateJour, userId, dateJour]
+      [entGlobal, entGlobal, entName, dateJour, entGlobal, entGlobal, entName, dateJour, entGlobal, entGlobal, entName, dateJour]
     );
 
     // Post-traitement: calculer balance et solde cumulés côté JS
@@ -164,6 +183,14 @@ router.get('/', authenticateToken, async (req, res) => {
 router.get('/search', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
+    const [[urow]] = await pool.query(
+      `SELECT u.entreprise_id AS entId, COALESCE(e.name, u.entreprise) AS entName, e.global_code AS entGlobal
+         FROM users u LEFT JOIN stock_entreprise e ON e.id = u.entreprise_id
+        WHERE u.id = ? LIMIT 1`, [userId]
+    );
+    const entId = urow ? urow.entId : null;
+    const entName = urow ? (urow.entName || '') : '';
+    const entGlobal = urow ? urow.entGlobal : null;
     const rawQuery = (req.query.searchQuery || "").trim().slice(0, 100);
     const isDate = /^\d{2}\/\d{2}\/\d{4}$/.test(rawQuery);
     let searchQuery = '%%';
@@ -187,11 +214,11 @@ router.get('/search', authenticateToken, async (req, res) => {
 
     const queryParams = [
       // Mouvements
-      userId, searchQuery, searchQuery, searchQuery, dateQuery, dateQuery,
+      entGlobal, entGlobal, entName, searchQuery, searchQuery, searchQuery, dateQuery, dateQuery,
       // Paiements
-      userId, searchQuery, searchQuery, searchQuery, dateQuery, dateQuery,
+      entGlobal, entGlobal, entName, entGlobal, entGlobal, entName, searchQuery, searchQuery, searchQuery, dateQuery, dateQuery,
       // Dépenses
-      userId, searchQuery, searchQuery, searchQuery, dateQuery, dateQuery
+      entGlobal, entGlobal, entName, searchQuery, searchQuery, searchQuery, dateQuery, dateQuery
     ];
 
     const [rowsRaw] = await pool.query(
@@ -217,9 +244,12 @@ router.get('/search', authenticateToken, async (req, res) => {
           sm.stockR AS stockR,
           NULL AS mouvement_id
         FROM stock_mouvements sm
+        
         LEFT JOIN stock_designations d ON d.id = sm.designation_id AND d.user_id = sm.user_id
         LEFT JOIN stock_clients c ON c.id = sm.client_id AND c.user_id = sm.user_id
-        WHERE sm.user_id = ?
+        WHERE (sm.global_id = ? OR (? IS NULL AND sm.user_id IN (
+                 SELECT id FROM users u2 WHERE COALESCE(u2.entreprise,'') = ?
+               )))
           AND (d.name LIKE ? OR c.name LIKE ? OR ? = '%%')
           AND (strftime('%Y-%m-%d', sm.date) = ? OR ? = '1970-01-01')
 
@@ -243,10 +273,13 @@ router.get('/search', authenticateToken, async (req, res) => {
           NULL AS stockR,
           sp.mouvement_id AS mouvement_id
         FROM stock_paiements sp
-        JOIN stock_mouvements sm ON sm.id = sp.mouvement_id AND sm.user_id = ?
+        JOIN stock_mouvements sm ON sm.id = sp.mouvement_id
+        
         LEFT JOIN stock_designations d ON d.id = sm.designation_id AND d.user_id = sm.user_id
         LEFT JOIN stock_clients c ON c.id = sm.client_id AND c.user_id = sm.user_id
-        WHERE sm.user_id = ?
+        WHERE (sm.global_id = ? OR (? IS NULL AND sm.user_id IN (
+                 SELECT id FROM users u3 WHERE COALESCE(u3.entreprise,'') = ?
+               )))
           AND (d.name LIKE ? OR c.name LIKE ? OR ? = '%%')
           AND (strftime('%Y-%m-%d', sp.date) = ? OR ? = '1970-01-01')
 
@@ -270,7 +303,9 @@ router.get('/search', authenticateToken, async (req, res) => {
           NULL AS stockR,
           NULL AS mouvement_id
         FROM stock_depenses sd
-        WHERE sd.user_id = ?
+        WHERE (sd.global_id = ? OR (? IS NULL AND sd.user_id IN (
+                 SELECT id FROM users u4 WHERE COALESCE(u4.entreprise,'') = ?
+               )))
           AND (sd.libelle LIKE ? OR sd.destinataire LIKE ? OR ? = '%%')
           AND (strftime('%Y-%m-%d', sd.date) = ? OR ? = '1970-01-01')
       ) AS t
@@ -278,11 +313,11 @@ router.get('/search', authenticateToken, async (req, res) => {
       `,
       [
         // Mouvements
-        userId, searchQuery, searchQuery, searchQuery, dateQuery, dateQuery,
-        // Paiements (JOIN condition user and WHERE user)
-        userId, userId, searchQuery, searchQuery, searchQuery, dateQuery, dateQuery,
+        entId, entId, entName, searchQuery, searchQuery, searchQuery, dateQuery, dateQuery,
+        // Paiements
+        entId, entId, entName, searchQuery, searchQuery, searchQuery, dateQuery, dateQuery,
         // Dépenses
-        userId, searchQuery, searchQuery, searchQuery, dateQuery, dateQuery
+        entId, entId, entName, searchQuery, searchQuery, searchQuery, dateQuery, dateQuery
       ]
     );
 

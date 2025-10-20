@@ -95,10 +95,18 @@ async function getOrCreateDesignation(conn, userId, designation_id, designation_
   }
 
   try {
+    // Resolve entreprise global_code for this user
+    const [[ctx]] = await conn.query(
+      `SELECT e.global_code AS entGlobal
+         FROM users u LEFT JOIN stock_entreprise e ON e.id = u.entreprise_id
+        WHERE u.id = ? LIMIT 1`,
+      [userId]
+    );
+    const entGlobal = ctx ? ctx.entGlobal : null;
     const [ins] = await conn.execute(
-      `INSERT INTO stock_designations (name, user_id, current_stock)
-       VALUES (?, ?, 0)`,
-      [name, userId]
+      `INSERT INTO stock_designations (name, user_id, current_stock, global_id)
+       VALUES (?, ?, 0, ?)`,
+      [name, userId, entGlobal]
     );
     return { id: ins.insertId, current_stock: 0 };
   } catch (e) {
@@ -146,10 +154,18 @@ async function getOrCreateClient(conn, userId, client_id, client_name) {
   if (byName.length > 0) return byName[0].id;
 
   try {
+    // Resolve entreprise global_code for this user
+    const [[ctx]] = await conn.query(
+      `SELECT e.global_code AS entGlobal
+         FROM users u LEFT JOIN stock_entreprise e ON e.id = u.entreprise_id
+        WHERE u.id = ? LIMIT 1`,
+      [userId]
+    );
+    const entGlobal = ctx ? ctx.entGlobal : null;
     const [ins] = await conn.execute(
-      `INSERT INTO stock_clients (name, user_id)
-       VALUES (?, ?)`,
-      [name, userId]
+      `INSERT INTO stock_clients (name, user_id, global_id)
+       VALUES (?, ?, ?)`,
+      [name, userId, entGlobal]
     );
     return ins.insertId;
   } catch (e) {
@@ -174,6 +190,14 @@ async function getOrCreateClient(conn, userId, client_id, client_name) {
 router.get('/', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
+    const [[urow]] = await pool.query(
+      `SELECT u.entreprise_id AS entId, COALESCE(e.name, u.entreprise) AS entName, e.global_code AS entGlobal
+         FROM users u LEFT JOIN stock_entreprise e ON e.id = u.entreprise_id
+        WHERE u.id = ? LIMIT 1`, [userId]
+    );
+    const entId = urow ? urow.entId : null;
+    const entName = urow ? (urow.entName || '') : '';
+    const entGlobal = urow ? urow.entGlobal : null;
 
     const [rows] = await pool.query(
       `
@@ -192,16 +216,19 @@ router.get('/', authenticateToken, async (req, res) => {
         COALESCE(d.name, 'N/A') AS designation_name,
         COALESCE(c.name, 'N/A') AS client_name
       FROM stock_mouvements sm
+      
       LEFT JOIN stock_designations d
         ON d.id = sm.designation_id
        AND d.user_id = sm.user_id
       LEFT JOIN stock_clients c
         ON c.id = sm.client_id
        AND c.user_id = sm.user_id
-      WHERE sm.user_id = ?
+      WHERE (sm.global_id = ? OR (? IS NULL AND sm.user_id IN (
+               SELECT id FROM users u2 WHERE COALESCE(u2.entreprise,'') = ?
+             )))
       ORDER BY sm.date DESC, sm.id DESC
       `,
-      [userId]
+      [entGlobal, entGlobal, entName]
     );
 
     res.json(rows);
@@ -269,11 +296,14 @@ router.post('/', authenticateToken, async (req, res) => {
       throw new Error('Stock insuffisant');
     }
 
+    // Resolve global_id for this user's entreprise
+    const [[ctx]] = await conn.query(`SELECT e.global_code AS entGlobal FROM users u LEFT JOIN stock_entreprise e ON e.id = u.entreprise_id WHERE u.id = ?`, [userId]);
+    const entGlobal = ctx ? ctx.entGlobal : null;
     const [result] = await conn.execute(
       `INSERT INTO stock_mouvements
-      (date, type, designation_id, quantite, prix, client_id, stock, stockR, user_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [date, typeNorm, des.id, qty, unitPrice, cliId, stock, stockR, userId]
+      (date, type, designation_id, quantite, prix, client_id, stock, stockR, user_id, global_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [date, typeNorm, des.id, qty, unitPrice, cliId, stock, stockR, userId, entGlobal]
     );
 
     await conn.execute(
@@ -332,13 +362,13 @@ router.post('/', authenticateToken, async (req, res) => {
             }
           }
           await rconn.execute(
-            `INSERT INTO stock_mouvements (id, user_id, date, type, designation_id, quantite, prix, client_id, stock, stockR)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `INSERT INTO stock_mouvements (id, user_id, date, type, designation_id, quantite, prix, client_id, stock, stockR, global_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON DUPLICATE KEY UPDATE
                date=VALUES(date), type=VALUES(type), designation_id=VALUES(designation_id),
                quantite=VALUES(quantite), prix=VALUES(prix), client_id=VALUES(client_id),
-               stock=VALUES(stock), stockR=VALUES(stockR)`,
-            [newId, userId, date, typeNorm, des.id, qty, unitPrice, cliId, stock, stockR]
+               stock=VALUES(stock), stockR=VALUES(stockR), global_id=VALUES(global_id)`,
+            [newId, userId, date, typeNorm, des.id, qty, unitPrice, cliId, stock, stockR, entGlobal]
           );
           await rconn.commit();
           remoteInfo = { success: true };

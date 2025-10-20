@@ -5,7 +5,9 @@ param(
   [string]$AuthSecretText,
   [ValidateSet('ftps','ftp','sftp')][string]$Protocol = 'ftps',
   [int]$Port,
-  [string]$RemoteRoot = '/public_html',
+  # IMPORTANT: If your FTP login already lands you inside public_html, set RemoteRoot to '/'.
+  # Use '/public_html' only if your login root is ABOVE the public_html directory.
+  [string]$RemoteRoot = '/',
   [switch]$Build,
   [switch]$DryRun,
   [switch]$UploadApi,            # upload php-api/index.php
@@ -41,12 +43,21 @@ if ($Build) {
   try { npm run build | Out-Null } finally { Pop-Location }
 }
 
-if (!(Test-Path $dist)) { throw "Build introuvable: $dist (utilisez -Build)" }
-if (!(Test-Path $rootHt)) { throw "Fichier manquant: $rootHt" }
-if (!(Test-Path $stockHt)) { throw "Fichier manquant: $stockHt" }
+# If doing a full/static site upload, ensure frontend artifacts exist.
+# For API-only uploads (-UploadApi / -UploadApiConfig / -ApiConfigContent), skip these checks.
+if (-not ($UploadApi -or $UploadApiConfig -or $ApiConfigContent)) {
+  if (!(Test-Path $dist)) { throw "Build introuvable: $dist (utilisez -Build)" }
+  if (!(Test-Path $rootHt)) { throw "Fichier manquant: $rootHt" }
+  if (!(Test-Path $stockHt)) { throw "Fichier manquant: $stockHt" }
+}
 
 $curl = 'curl.exe'
 if (-not (Get-Command $curl -ErrorAction SilentlyContinue)) { throw 'curl.exe introuvable dans le PATH' }
+
+# Heads-up to avoid creating a nested /public_html when the FTP account is already chrooted into it
+if ($RemoteRoot.Trim() -match '^/?public_html/?$') {
+  Write-Warning "RemoteRoot est défini sur '/public_html'. Si votre connexion FTP s'ouvre déjà dans 'public_html', cela créera un dossier 'public_html' imbriqué. Dans ce cas, utilisez -RemoteRoot '/' à la place."
+}
 
 # determine password to use
 if ($Password) {
@@ -112,24 +123,36 @@ function Send-RemoteText {
   finally { Remove-Item -Force $tmp -ErrorAction SilentlyContinue }
 }
 
-# 1) .htaccess racine
-Send-RemoteFile -localFile $rootHt -remotePath (Join-RemotePath $RemoteRoot '.htaccess')
-
-# 2) Dist -> public_html/stock
-Get-ChildItem -LiteralPath $dist -Recurse -File | ForEach-Object {
-  $rel = ($_.FullName.Substring($dist.Length) -replace '^[\\/]+','')
-  $remote = (Join-RemotePath $RemoteRoot 'stock' $rel)
-  Send-RemoteFile -localFile $_.FullName -remotePath $remote
+# 1) .htaccess racine (skip for API-only uploads)
+if (-not ($UploadApi -or $UploadApiConfig -or $ApiConfigContent)) {
+  Send-RemoteFile -localFile $rootHt -remotePath (Join-RemotePath $RemoteRoot '.htaccess')
 }
 
-# 3) .htaccess dans stock
-Send-RemoteFile -localFile $stockHt -remotePath (Join-RemotePath $RemoteRoot 'stock' '.htaccess')
+# 2) Dist -> public_html/stock (skip for API-only uploads)
+if (-not ($UploadApi -or $UploadApiConfig -or $ApiConfigContent)) {
+  Get-ChildItem -LiteralPath $dist -Recurse -File | ForEach-Object {
+    $rel = ($_.FullName.Substring($dist.Length) -replace '^[\\/]+','')
+    $remote = (Join-RemotePath $RemoteRoot 'stock' $rel)
+    Send-RemoteFile -localFile $_.FullName -remotePath $remote
+  }
+}
+
+# 3) .htaccess dans stock (skip for API-only uploads)
+if (-not ($UploadApi -or $UploadApiConfig -or $ApiConfigContent)) {
+  Send-RemoteFile -localFile $stockHt -remotePath (Join-RemotePath $RemoteRoot 'stock' '.htaccess')
+}
 
 # 4) API PHP
 if ($UploadApi) {
-  $apiIndex = Join-Path $apiDir 'index.php'
-  if (Test-Path $apiIndex) {
-    Send-RemoteFile -localFile $apiIndex -remotePath (Join-RemotePath $RemoteRoot 'stock/api' 'index.php')
+  # Upload all API support files except config.php (secrets). Always include index.php and .htaccess if present.
+  $apiFiles = @()
+  if (Test-Path $apiDir) {
+    $apiFiles = Get-ChildItem -LiteralPath $apiDir -File -Recurse | Where-Object { $_.Name -ne 'config.php' }
+  }
+  foreach ($f in $apiFiles) {
+    $rel = ($f.FullName.Substring($apiDir.Length) -replace '^[\\/]+','')
+    $remote = (Join-RemotePath $RemoteRoot 'stock/api' $rel)
+    Send-RemoteFile -localFile $f.FullName -remotePath $remote
   }
 }
 if ($UploadApiConfig) {

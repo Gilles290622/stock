@@ -1,12 +1,14 @@
 RewriteEngine On
 
-# Contexte sous-dossier /stock
-# Si ce .htaccess est placé dans public_html/stock/
+# Ce .htaccess est placé dans public_html/stock/api
+# On route TOUT vers index.php en passant la route demandée en query param.
+# Cela rend le routage robuste même si REQUEST_URI est modifiée par l'hébergeur.
 
-# API routing local: /stock/api/* vers api/index.php
-RewriteRule ^api/?(.*)$ api/index.php [QSA,L]
+# Transmettre l'en-tête Authorization à PHP (nécessaire pour JWT sous LiteSpeed/Apache)
+SetEnvIfNoCase Authorization "^(.*)$" HTTP_AUTHORIZATION=$1
+RewriteCond %{HTTP:Authorization} .
+RewriteRule ^ - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
 
-# Frontend SPA fallback: servir index.html pour toute route non-fichier/dossier
 RewriteCond %{REQUEST_FILENAME} !-f
 RewriteCond %{REQUEST_FILENAME} !-d
-RewriteRule . index.html [L]
+RewriteRule ^(.*)$ index.php?route=$1 [QSA,L]

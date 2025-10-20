@@ -16,10 +16,43 @@ router.post('/', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Nom invalide' });
     }
 
-    await pool.execute(
-      `UPDATE users SET full_name = ?, entreprise = COALESCE(?, entreprise), phone_number = ?, logo = ? WHERE id = ?`,
-      [full_name, entreprise || null, phone_number || null, logo || null, userId]
-    );
+    // Try mapping entreprise -> entreprise_id; fallback to legacy column
+    let setById = false;
+    if (typeof entreprise !== 'undefined') {
+      try {
+        const conn = await pool.getConnection();
+        try {
+          await conn.beginTransaction();
+          if (entreprise) {
+            await conn.execute('CREATE TABLE IF NOT EXISTS stock_entreprise (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, created_at TEXT)');
+            try { await conn.execute('INSERT OR IGNORE INTO stock_entreprise (name) VALUES (?)', [entreprise]); } catch (_) {}
+            const [r] = await conn.execute('SELECT id FROM stock_entreprise WHERE name = ? LIMIT 1', [entreprise]);
+            const entId = r && r.length ? r[0].id : null;
+            if (entId) {
+              try { await conn.execute('ALTER TABLE users ADD COLUMN entreprise_id INTEGER'); } catch (_) {}
+              await conn.execute('UPDATE users SET entreprise_id = ? WHERE id = ?', [entId, userId]);
+              setById = true;
+            }
+          } else {
+            await conn.execute('UPDATE users SET entreprise_id = NULL WHERE id = ?', [userId]);
+            setById = true;
+          }
+          await conn.commit();
+        } catch (e) { try { await conn.rollback(); } catch (_) {} throw e; }
+        finally { conn.release(); }
+      } catch (_) { /* ignore */ }
+    }
+    if (!setById) {
+      await pool.execute(
+        `UPDATE users SET full_name = ?, entreprise = COALESCE(?, entreprise), phone_number = ?, logo = ? WHERE id = ?`,
+        [full_name, entreprise || null, phone_number || null, logo || null, userId]
+      );
+    } else {
+      await pool.execute(
+        `UPDATE users SET full_name = ?, phone_number = ?, logo = ? WHERE id = ?`,
+        [full_name, phone_number || null, logo || null, userId]
+      );
+    }
     if (typeof auto_sync !== 'undefined') {
       await pool.execute(
         `UPDATE profiles SET auto_sync = ? WHERE user_id = ?`,
@@ -28,9 +61,11 @@ router.post('/', authenticateToken, async (req, res) => {
     }
 
     const [rows] = await pool.execute(
-      `SELECT u.id, u.email, u.full_name, u.entreprise, u.phone_number, u.logo, p.username, p.role, p.status, p.auto_sync
+      `SELECT u.id, u.email, u.full_name, COALESCE(e.name, u.entreprise) AS entreprise,
+              u.phone_number, u.logo, p.username, p.role, p.status, p.auto_sync
          FROM users u
          LEFT JOIN profiles p ON u.id = p.user_id
+         LEFT JOIN stock_entreprise e ON e.id = u.entreprise_id
         WHERE u.id = ?`,
       [userId]
     );

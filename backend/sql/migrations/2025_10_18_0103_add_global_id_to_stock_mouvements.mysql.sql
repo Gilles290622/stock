@@ -1,0 +1,1 @@
+ALTER TABLE stock_mouvements ADD COLUMN global_id INT NULL;

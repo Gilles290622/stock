@@ -32,14 +32,27 @@ function validatePayment(body) {
 router.get('/', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
+    const [[urow]] = await pool.query(
+      `SELECT u.entreprise_id AS entId, COALESCE(e.name, u.entreprise) AS entName, e.global_code AS entGlobal
+         FROM users u LEFT JOIN stock_entreprise e ON e.id = u.entreprise_id
+        WHERE u.id = ? LIMIT 1`, [userId]
+    );
+    const entId = urow ? urow.entId : null;
+    const entName = urow ? (urow.entName || '') : '';
+    const entGlobal = urow ? urow.entGlobal : null;
     const mouvementId = normalizeId(req.query.mouvement_id);
     if (mouvementId == null) {
       return res.status(400).json({ error: 'Paramètre mouvement_id requis' });
     }
 
     const [movRows] = await pool.query(
-      `SELECT id FROM stock_mouvements WHERE id = ? AND user_id = ?`,
-      [mouvementId, userId]
+      `SELECT sm.id
+         FROM stock_mouvements sm
+        WHERE sm.id = ?
+          AND (sm.global_id = ? OR (? IS NULL AND sm.user_id IN (
+               SELECT id FROM users u2 WHERE COALESCE(u2.entreprise,'') = ?
+             )))`,
+      [mouvementId, entGlobal, entGlobal, entName]
     );
     if (movRows.length === 0) {
       return res.json([]);
@@ -108,10 +121,19 @@ router.post('/', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Le montant dépasse le reste à payer' });
     }
 
+    // Resolve entGlobal for this payment
+    const [[ctx]] = await conn.query(
+      `SELECT e.global_code AS entGlobal
+         FROM users u LEFT JOIN stock_entreprise e ON e.id = u.entreprise_id
+        WHERE u.id = ? LIMIT 1`,
+      [userId]
+    );
+    const entGlobal = ctx ? ctx.entGlobal : null;
+
     const [ins] = await conn.execute(
-      `INSERT INTO stock_paiements (mouvement_id, user_id, montant, \`date\`)
-       VALUES (?, ?, ?, ?)`,
-      [movId, userId, amount, isoDate]
+      `INSERT INTO stock_paiements (mouvement_id, user_id, montant, \`date\`, global_id)
+       VALUES (?, ?, ?, ?, ?)`,
+      [movId, userId, amount, isoDate, entGlobal]
     );
 
     await conn.commit();
@@ -141,24 +163,24 @@ router.post('/', authenticateToken, async (req, res) => {
           if (rm.length === 0) {
             // Try shallow insert with minimal fields from local
             const [lm] = await pool.query(
-              `SELECT id, user_id, strftime('%Y-%m-%d', date) AS date, type, designation_id, quantite, prix, client_id, stock, stockR
+              `SELECT id, user_id, strftime('%Y-%m-%d', date) AS date, type, designation_id, quantite, prix, client_id, stock, stockR, global_id
                FROM stock_mouvements WHERE id = ? AND user_id = ?`, [movId, userId]
             );
             const m = lm && lm[0];
             if (m) {
               await rconn.execute(
-                `INSERT INTO stock_mouvements (id, user_id, date, type, designation_id, quantite, prix, client_id, stock, stockR)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                 ON DUPLICATE KEY UPDATE date=VALUES(date)`,
-                [m.id, m.user_id, m.date, m.type, m.designation_id, m.quantite, m.prix, m.client_id, m.stock, m.stockR]
+                `INSERT INTO stock_mouvements (id, user_id, date, type, designation_id, quantite, prix, client_id, stock, stockR, global_id)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE date=VALUES(date), global_id=VALUES(global_id)`,
+                [m.id, m.user_id, m.date, m.type, m.designation_id, m.quantite, m.prix, m.client_id, m.stock, m.stockR, m.global_id]
               );
             }
           }
           await rconn.execute(
-            `INSERT INTO stock_paiements (id, mouvement_id, user_id, montant, date)
-             VALUES (?, ?, ?, ?, ?)
-             ON DUPLICATE KEY UPDATE montant=VALUES(montant), date=VALUES(date)`,
-            [ins.insertId, movId, userId, amount, isoDate]
+            `INSERT INTO stock_paiements (id, mouvement_id, user_id, montant, date, global_id)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE montant=VALUES(montant), date=VALUES(date), global_id=VALUES(global_id)`,
+            [ins.insertId, movId, userId, amount, isoDate, entGlobal]
           );
           await rconn.commit();
         } catch (e) {
@@ -195,6 +217,14 @@ router.patch('/:id', authenticateToken, async (req, res) => {
   let conn;
   try {
     const userId = req.user.id;
+    const [[urow]] = await pool.query(
+      `SELECT u.entreprise_id AS entId, COALESCE(e.name, u.entreprise) AS entName, e.global_code AS entGlobal
+         FROM users u LEFT JOIN stock_entreprise e ON e.id = u.entreprise_id
+        WHERE u.id = ? LIMIT 1`, [userId]
+    );
+    const entId = urow ? urow.entId : null;
+    const entName = urow ? (urow.entName || '') : '';
+    const entGlobal = urow ? urow.entGlobal : null;
     const id = normalizeId(req.params.id);
     if (id == null) return res.status(400).json({ error: 'ID invalide' });
 
@@ -217,8 +247,11 @@ router.patch('/:id', authenticateToken, async (req, res) => {
               sm.montant AS mouvement_montant, sm.user_id
          FROM stock_paiements sp
          JOIN stock_mouvements sm ON sm.id = sp.mouvement_id
-        WHERE sp.id = ?`,
-      [id]
+        WHERE sp.id = ?
+          AND (sm.global_id = ? OR (? IS NULL AND sm.user_id IN (
+               SELECT id FROM users u2 WHERE COALESCE(u2.entreprise,'') = ?
+             )))`,
+      [id, entGlobal, entGlobal, entName]
     );
     if (payRows.length === 0) {
       await conn.rollback();
@@ -301,6 +334,14 @@ router.delete('/:id', authenticateToken, async (req, res) => {
   let conn;
   try {
     const userId = req.user.id;
+    const [[urow]] = await pool.query(
+      `SELECT u.entreprise_id AS entId, COALESCE(e.name, u.entreprise) AS entName, e.global_code AS entGlobal
+         FROM users u LEFT JOIN stock_entreprise e ON e.id = u.entreprise_id
+        WHERE u.id = ? LIMIT 1`, [userId]
+    );
+    const entId = urow ? urow.entId : null;
+    const entName = urow ? (urow.entName || '') : '';
+    const entGlobal = urow ? urow.entGlobal : null;
     const id = normalizeId(req.params.id);
     if (id == null) return res.status(400).json({ error: 'ID invalide' });
 
@@ -312,8 +353,11 @@ router.delete('/:id', authenticateToken, async (req, res) => {
       `SELECT sp.id, sp.mouvement_id, sp.montant, sm.montant AS mouvement_montant, sm.user_id
          FROM stock_paiements sp
          JOIN stock_mouvements sm ON sm.id = sp.mouvement_id
-        WHERE sp.id = ?`,
-      [id]
+        WHERE sp.id = ?
+          AND (sm.global_id = ? OR (? IS NULL AND sm.user_id IN (
+               SELECT id FROM users u2 WHERE COALESCE(u2.entreprise,'') = ?
+             )))`,
+      [id, entGlobal, entGlobal, entName]
     );
     if (payRows.length === 0) {
       await conn.rollback();

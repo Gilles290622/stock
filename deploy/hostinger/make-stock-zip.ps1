@@ -37,10 +37,6 @@ if (!(Test-Path $stockHtaccess)) { throw ".htaccess stock manquant: $stockHtacce
 Copy-Item -Force $rootHtaccess  (Join-Path $public '.htaccess')
 Copy-Item -Force $stockHtaccess (Join-Path $publicStock '.htaccess')
 
-# 3.5) Ecrire un fichier version.txt dans public_html/stock pour verifier le déploiement
-$versionFile = Join-Path $publicStock 'version.txt'
-"Build: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" | Set-Content -Path $versionFile -Encoding UTF8
-
 # 4) Créer le ZIP (robuste)
 if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
 

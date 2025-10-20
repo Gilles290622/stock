@@ -1,0 +1,1 @@
+ALTER TABLE stock_depenses ADD COLUMN global_id INTEGER;

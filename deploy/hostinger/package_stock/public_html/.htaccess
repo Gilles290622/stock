@@ -1,0 +1,13 @@
+RewriteEngine On
+
+# Forcer HTTPS (Hostinger) — éviter boucles si proxy déjà en HTTPS
+RewriteCond %{HTTPS} !=on [OR]
+RewriteCond %{HTTP:X-Forwarded-Proto} !https
+RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+
+# Redirection de la racine vers /stock/
+RewriteCond %{REQUEST_URI} ^/$
+RewriteRule ^$ /stock/ [R=302,L]
+
+# Router /api/* de la racine vers /stock/api/index.php
+RewriteRule ^api/?(.*)$ stock/api/index.php [QSA,L]

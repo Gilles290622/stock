@@ -28,6 +28,12 @@ Le build apparaît dans `frontend/dist`.
 - Placez le `.htaccess` « racine » fourni (`deploy/hostinger/root/.htaccess`) dans `public_html/.htaccess`.
 - Placez le `.htaccess` « stock » fourni (`deploy/hostinger/stock/.htaccess`) dans `public_html/stock/.htaccess`.
 
+Astuce sur la racine distante (RemoteRoot):
+
+- Certains comptes FTP ouvrent directement dans `public_html` (chroot). Dans ce cas, considérez que la racine distante est `/` et non `/public_html`.
+- Si votre compte FTP ouvre au-dessus de `public_html` (vous voyez le dossier `public_html` à côté d'autres dossiers), utilisez `/public_html`.
+- Ne mélangez pas: si vous êtes déjà « dans » `public_html` et que vous envoyez dans `/public_html/stock`, vous obtiendrez un second dossier `public_html/public_html/...`.
+
 ## 3) .htaccess
 
 Fichiers fournis:
@@ -49,6 +55,19 @@ Fichiers fournis:
 
 - Ouvrez `https://votre-domaine/` → redirige vers `/stock/`.
 - Le site doit charger et appeler l'API via `VITE_API_BASE` si défini, sinon via `/api` relatif.
+
+## 7) Déploiement via script PowerShell
+
+Le script `deploy/hostinger/sync-upload.ps1` accepte un paramètre `-RemoteRoot`:
+
+- Utilisez `-RemoteRoot '/'` si votre connexion FTP atterrit déjà dans `public_html`.
+- Utilisez `-RemoteRoot '/public_html'` si votre connexion atterrit au-dessus du dossier `public_html`.
+
+Exemple (FTPS explicite, port 21):
+
+```
+powershell -File deploy/hostinger/sync-upload.ps1 -FtpHost "ftp.votre-domaine" -User "u123456" -AuthSecretText "<motdepasse>" -Protocol ftps -ExplicitTls -Port 21 -RemoteRoot "/" -UploadApi
+```
 
 ## 6) Astuces
 

@@ -8,9 +8,9 @@ try {
   if (envBase) {
     baseURL = envBase;
   } else if (typeof window !== 'undefined') {
-    // Si l'app est servie depuis /stock/, préfixer automatiquement les API (ex: /stock/api)
+    // Si l'app est servie depuis /stock ou /stock/, préfixer automatiquement les API (ex: /stock/api)
     const path = window.location.pathname || '/';
-    if (path.startsWith('/stock/')) {
+    if (path.startsWith('/stock')) {
       baseURL = '/stock';
     } else {
       baseURL = '';

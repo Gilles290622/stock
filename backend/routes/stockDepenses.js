@@ -4,6 +4,17 @@ const pool = require('../config/db');
 const remotePool = require('../config/remoteDb');
 const authenticateToken = require('../middleware/auth');
 
+async function getEntrepriseContext(userId) {
+  const [rows] = await pool.execute(
+    `SELECT u.entreprise_id AS entId, COALESCE(e.name, u.entreprise) AS entName, e.global_code AS entGlobal
+       FROM users u LEFT JOIN stock_entreprise e ON e.id = u.entreprise_id
+      WHERE u.id = ? LIMIT 1`,
+    [userId]
+  );
+  const r = rows && rows[0];
+  return { entId: (r && r.entId) ?? null, entName: (r && r.entName) || null, entGlobal: (r && r.entGlobal) ?? null };
+}
+
 // POST /api/stockDepenses — insérer une dépense
 router.post('/', authenticateToken, async (req, res) => {
   try {
@@ -24,10 +35,11 @@ router.post('/', authenticateToken, async (req, res) => {
 
     const dest = String(destinataire || '').trim() || null;
 
+    const { entGlobal } = await getEntrepriseContext(userId);
     const [result] = await pool.execute(
-      `INSERT INTO stock_depenses (user_id, date, libelle, montant, destinataire)
-       VALUES (?, ?, ?, ?, ?)`,
-      [userId, date, label, amount, dest]
+      `INSERT INTO stock_depenses (user_id, date, libelle, montant, destinataire, global_id)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [userId, date, label, amount, dest, entGlobal]
     );
 
     res.status(201).json({
@@ -60,10 +72,10 @@ router.post('/', authenticateToken, async (req, res) => {
             }
           }
           await rconn.execute(
-            `INSERT INTO stock_depenses (id, user_id, date, libelle, montant, destinataire)
-             VALUES (?, ?, ?, ?, ?, ?)
-             ON DUPLICATE KEY UPDATE date=VALUES(date), libelle=VALUES(libelle), montant=VALUES(montant), destinataire=VALUES(destinataire)`,
-            [result.insertId, userId, date, label, amount, dest]
+            `INSERT INTO stock_depenses (id, user_id, date, libelle, montant, destinataire, global_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE date=VALUES(date), libelle=VALUES(libelle), montant=VALUES(montant), destinataire=VALUES(destinataire), global_id=VALUES(global_id)`,
+            [result.insertId, userId, date, label, amount, dest, entGlobal]
           );
         } catch (e) {
           console.warn('Remote push (depense create) skipped:', e?.message || e);
@@ -84,6 +96,7 @@ router.patch('/:id', authenticateToken, async (req, res) => {
   let conn;
   try {
     const userId = req.user.id;
+  const { entId, entName, entGlobal } = await getEntrepriseContext(userId);
     const id = parseInt(req.params.id, 10);
     if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'ID invalide' });
 
@@ -112,10 +125,22 @@ router.patch('/:id', authenticateToken, async (req, res) => {
     conn = await pool.getConnection();
     await conn.beginTransaction();
 
-    const [exists] = await conn.execute('SELECT id FROM stock_depenses WHERE id = ? AND user_id = ?', [id, userId]);
+    const [exists] = await conn.execute(
+      `SELECT sd.id, sd.user_id
+         FROM stock_depenses sd
+        WHERE sd.id = ?
+          AND (sd.global_id = ? OR (? IS NULL AND sd.user_id IN (
+               SELECT id FROM users u2 WHERE COALESCE(u2.entreprise,'') = ?
+             )))`,
+      [id, entGlobal, entGlobal, entName || '']
+    );
     if (exists.length === 0) {
       await conn.rollback();
       return res.status(404).json({ error: 'Dépense introuvable' });
+    }
+    if (exists[0].user_id !== userId) {
+      await conn.rollback();
+      return res.status(403).json({ error: 'Accès refusé' });
     }
 
     const setParts = [];
@@ -124,10 +149,18 @@ router.patch('/:id', authenticateToken, async (req, res) => {
       setParts.push(`${k} = ?`);
       values.push(v);
     }
-    values.push(id, userId);
-    await conn.execute(`UPDATE stock_depenses SET ${setParts.join(', ')} WHERE id = ? AND user_id = ?`, values);
+  values.push(id, userId);
+  await conn.execute(`UPDATE stock_depenses SET ${setParts.join(', ')} WHERE id = ? AND user_id = ?`, values);
 
-  const [rows] = await conn.execute("SELECT id, user_id, strftime('%Y-%m-%d', date) AS date, libelle, montant, destinataire FROM stock_depenses WHERE id = ? AND user_id = ?", [id, userId]);
+  const [rows] = await conn.execute(
+      `SELECT sd.id, sd.user_id, strftime('%Y-%m-%d', sd.date) AS date, sd.libelle, sd.montant, sd.destinataire
+         FROM stock_depenses sd
+        WHERE sd.id = ?
+          AND (sd.global_id = ? OR (? IS NULL AND sd.user_id IN (
+               SELECT id FROM users u2 WHERE COALESCE(u2.entreprise,'') = ?
+             )))`,
+      [id, entGlobal, entGlobal, entName || '']
+    );
     const updated = rows[0];
 
     await conn.commit();
@@ -167,16 +200,29 @@ router.delete('/:id', authenticateToken, async (req, res) => {
   let conn;
   try {
     const userId = req.user.id;
+  const { entId, entName, entGlobal } = await getEntrepriseContext(userId);
     const id = parseInt(req.params.id, 10);
     if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'ID invalide' });
 
     conn = await pool.getConnection();
     await conn.beginTransaction();
 
-    const [exists] = await conn.execute('SELECT id FROM stock_depenses WHERE id = ? AND user_id = ?', [id, userId]);
+    const [exists] = await conn.execute(
+      `SELECT sd.id, sd.user_id
+         FROM stock_depenses sd
+        WHERE sd.id = ?
+          AND (sd.global_id = ? OR (? IS NULL AND sd.user_id IN (
+               SELECT id FROM users u2 WHERE COALESCE(u2.entreprise,'') = ?
+             )))`,
+      [id, entGlobal, entGlobal, entName || '']
+    );
     if (exists.length === 0) {
       await conn.rollback();
       return res.status(404).json({ error: 'Dépense introuvable' });
+    }
+    if (exists[0].user_id !== userId) {
+      await conn.rollback();
+      return res.status(403).json({ error: 'Accès refusé' });
     }
     await conn.execute('DELETE FROM stock_depenses WHERE id = ? AND user_id = ?', [id, userId]);
     await conn.commit();

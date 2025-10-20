@@ -1,0 +1,1 @@
+ALTER TABLE stock_designations ADD COLUMN global_id INTEGER;

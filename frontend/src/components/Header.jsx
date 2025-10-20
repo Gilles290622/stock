@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../api/axios";
-import { pushAll, pullAllSource, pushAllSSE } from '../api/sync';
+import { pushAll, pullAllSource, pushAllSSE, pullAllSSE } from '../api/sync';
 
 export default function Header({ username, userLogo, userNumber, onLogout, showSync = true, userId, role, entreprise: initialEntreprise, onEntrepriseChange }) {
   const navigate = useNavigate();
@@ -22,6 +22,7 @@ export default function Header({ username, userLogo, userNumber, onLogout, showS
     let stop = false;
     async function check() {
       try {
+        if (!showSync) { return; }
         setRemoteInfo(prev => ({ ...prev, checking: true }));
         const { data } = await api.get('/api/sync/remote-summary');
         if (stop) return;
@@ -34,7 +35,7 @@ export default function Header({ username, userLogo, userNumber, onLogout, showS
     check();
     const id = setInterval(check, 2 * 60 * 1000);
     return () => { stop = true; clearInterval(id); };
-  }, []);
+  }, [showSync]);
 
   async function saveEntreprise() {
     if (savingEnt) return;
@@ -85,6 +86,29 @@ export default function Header({ username, userLogo, userNumber, onLogout, showS
     return ctrl;
   }
 
+  async function handlePullAllSSE() {
+    if (pulling) return;
+    setPullMsg('');
+    setPulling(true);
+    let lastLabel = '';
+    const ctrl = pullAllSSE({
+      onStart: () => { setPullMsg('Démarrage de l\'import…'); },
+      onProgress: (p) => {
+        const label = p?.label || p?.step || '';
+        lastLabel = label;
+        const percent = (typeof p?.percent === 'number') ? ` ${p.percent}%` : '';
+        const message = p?.message || '';
+        setPullMsg(`${label}${percent}${message ? ' - ' + message : ''}`);
+      },
+      onError: (msg) => { setPullMsg(`Erreur import: ${msg}`); setPulling(false); },
+      onDone: (payload) => {
+        setPullMsg(payload?.success ? `Import terminé${lastLabel ? ' - ' + lastLabel : ''}` : 'Import terminé avec avertissements');
+        setPulling(false);
+      }
+    });
+    return ctrl;
+  }
+
   async function handlePullAll() {
     try {
       setPullMsg('');
@@ -103,18 +127,31 @@ export default function Header({ username, userLogo, userNumber, onLogout, showS
   }
 
   const isAdmin = role === 'admin';
+  const isAuthenticated = !!(userId || username);
+  // Résout les chemins d'images/assets en tenant compte de la base '/stock/' en production
+  function resolveAssetPath(p) {
+    if (!p) return '';
+    if (/^https?:\/\//i.test(p)) return p;
+    const base = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.BASE_URL) ? import.meta.env.BASE_URL : '/';
+    // Si p commence par '/', on préfixe avec la base sans slash final (ex: '/stock' + '/default-avatar.svg')
+    if (p.startsWith('/')) return (base.replace(/\/$/, '')) + p;
+    // Sinon, on concatène (ex: '/stock/' + 'default-avatar.svg')
+    return base + p;
+  }
+  const appLogo = resolveAssetPath('logo.png');
+  const appFavicon = resolveAssetPath('favicon.png');
   return (
     <header className={`sticky top-0 z-40 backdrop-blur supports-[backdrop-filter]:bg-white/80 bg-white border-b border-slate-200 text-slate-800`}>
       <div className="max-w-7xl mx-auto px-6 py-3 flex justify-between items-center">
         <div className="flex items-center gap-3 min-w-0">
           {/* Logo utilisateur */}
           <img
-            src={userLogo || "/default-avatar.svg"}
+            src={userLogo ? resolveAssetPath(userLogo) : (appLogo || appFavicon || resolveAssetPath('default-avatar.svg'))}
             alt="Avatar utilisateur"
             className="h-9 w-9 rounded-full border border-slate-200 object-cover bg-white"
           />
           <div className="font-semibold text-lg truncate">{isAdmin ? 'Administration' : 'Gestion de stock'}</div>
-        {username && (
+        {isAuthenticated && (
           <div className="ml-2">
             {!editingEnt && (
               <button
@@ -154,33 +191,43 @@ export default function Header({ username, userLogo, userNumber, onLogout, showS
           </div>
         )}
         {/* Numéro utilisateur */}
-        {userNumber && (
+        {isAuthenticated && userNumber && (
           <span className="bg-slate-100 text-slate-700 px-2.5 py-1 rounded-full text-xs font-medium ml-2 border border-slate-200">
             N° {userNumber}
           </span>
         )}
       </div>
       <div className="flex items-center gap-3">
-        {username ? (
+        {isAuthenticated ? (
           <>
             {!isAdmin && showSync && (
               <button
                 className={`px-3 py-2 rounded-md shadow-sm border ${syncing ? 'bg-slate-100 text-slate-400 cursor-not-allowed border-slate-200' : 'bg-white text-slate-700 hover:bg-slate-50 border-slate-200'}`}
                 onClick={handleSyncAll}
                 disabled={syncing}
-                title="Synchroniser toutes les données locales vers la base distante"
+                title="Publier (envoyer) toutes les données locales vers la base distante"
               >
-                {syncing ? 'Synchronisation…' : 'Synchroniser'}
+                {syncing ? 'Publication…' : 'Publier'}
+              </button>
+            )}
+            {!isAdmin && showSync && (
+              <button
+                className={`px-3 py-2 rounded-md shadow-sm border ${pulling ? 'bg-slate-100 text-slate-400 cursor-not-allowed border-slate-200' : 'bg-white text-slate-700 hover:bg-slate-50 border-slate-200'}`}
+                onClick={handlePullAllSSE}
+                disabled={pulling}
+                title="Importer les données depuis la base distante vers le local"
+              >
+                {pulling ? 'Import…' : 'Importer'}
               </button>
             )}
             {/* Indicateur de nouveautés distantes */}
-            {!isAdmin && (
+            {!isAdmin && showSync && (
               <span className={`text-xs px-2.5 py-1 rounded-md border ${remoteInfo.hasUpdates ? 'bg-amber-50 text-amber-900 border-amber-300' : 'bg-slate-50 text-slate-600 border-slate-200'}`} title="État des nouveautés distantes (vérification périodique)">
                 {remoteInfo.checking ? 'Vérification…' : (remoteInfo.hasUpdates ? 'Nouveautés disponibles' : 'À jour')}
               </span>
             )}
             {/* MAJ SOURCE - visible uniquement pour l'utilisateur 7 et non admin */}
-            {!isAdmin && Number(userId) === 7 && (
+            {!isAdmin && showSync && Number(userId) === 7 && (
               <button
                 className={`px-3 py-2 rounded-md shadow-sm border ${pulling ? 'bg-slate-100 text-slate-400 cursor-not-allowed border-slate-200' : 'bg-white text-slate-700 hover:bg-slate-50 border-slate-200'}`}
                 onClick={handlePullAll}
@@ -209,7 +256,7 @@ export default function Header({ username, userLogo, userNumber, onLogout, showS
                 Profil
               </button>
             )}
-            <span className="font-medium text-slate-700">Session : <span className="underline decoration-slate-300 underline-offset-4">{username}</span></span>
+            <span className="font-medium text-slate-700">Session : <span className="underline decoration-slate-300 underline-offset-4">{username || 'Utilisateur'}</span></span>
             <button
               className="p-2 rounded-full hover:bg-slate-100 focus:outline-none border border-slate-200"
               title="Déconnexion"
@@ -222,7 +269,10 @@ export default function Header({ username, userLogo, userNumber, onLogout, showS
             </button>
           </>
         ) : (
-          <button className="px-4 py-2 rounded-md shadow-sm border bg-white text-slate-700 hover:bg-slate-50 border-slate-200">
+          <button
+            className="px-4 py-2 rounded-md shadow-sm border bg-white text-slate-700 hover:bg-slate-50 border-slate-200"
+            onClick={() => navigate('/login')}
+          >
             Connexion
           </button>
         )}

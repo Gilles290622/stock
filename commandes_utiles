@@ -1,1 +1,12 @@
-cd frontend ;npm run build
+cd C:\Users\HP\Desktop\stock\frontend ;npm run build
+cd C:\Users\HP\Desktop\stock\backend ;npm run start
+
+ -FtpHost "45.84.207.203" 
+ -User "u313667830.jts-services.shop" 
+ -AuthSecretText "Gilles29@"
+ -Protocol ftps 
+ -ExplicitTls 
+ -Port 21 
+ -RemoteRoot "/" 
+ -Insecure 
+ -UploadApi

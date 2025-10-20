@@ -67,10 +67,24 @@ router.post('/register', async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
     console.log('Password hashed successfully');
 
-    // Insert dans users (sans username, avec full_name)
+    // Insert dans users (sans username, avec full_name); try to map entreprise name to entreprise_id
+    let entrepriseId = null;
+    if (entreprise) {
+      try {
+        await conn.execute('CREATE TABLE IF NOT EXISTS stock_entreprise (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, created_at TEXT)');
+        try { await conn.execute('INSERT OR IGNORE INTO stock_entreprise (name) VALUES (?)', [entreprise]); } catch (_) {}
+        const [erows] = await conn.execute('SELECT id FROM stock_entreprise WHERE name = ? LIMIT 1', [entreprise]);
+        if (erows && erows.length) entrepriseId = erows[0].id;
+        try { await conn.execute('ALTER TABLE users ADD COLUMN entreprise_id INTEGER'); } catch (_) {}
+      } catch (_) { /* ignore if table/alter not possible */ }
+    }
     const [insertResult] = await conn.execute(
-      'INSERT INTO users (full_name, entreprise, email, password) VALUES (?, ?, ?, ?)',
-      [full_name, entreprise || null, email, hashedPassword]
+      entrepriseId != null
+        ? 'INSERT INTO users (full_name, entreprise_id, email, password) VALUES (?, ?, ?, ?)'
+        : 'INSERT INTO users (full_name, entreprise, email, password) VALUES (?, ?, ?, ?)',
+      entrepriseId != null
+        ? [full_name, entrepriseId, email, hashedPassword]
+        : [full_name, entreprise || null, email, hashedPassword]
     );
     const userId = insertResult.insertId;
     console.log('User inserted in users, ID:', userId);
@@ -91,26 +105,45 @@ router.post('/register', async (req, res) => {
         try {
           rconn = await remotePool.getConnection();
           await rconn.beginTransaction();
-          // Upsert user
+          // Upsert user with entreprise_id if possible
           try {
-            await rconn.execute(
-              `INSERT INTO users (id, full_name, entreprise, email, password, phone_number, logo)
-               VALUES (?, ?, ?, ?, ?, NULL, NULL)
-               ON DUPLICATE KEY UPDATE full_name=VALUES(full_name), entreprise=VALUES(entreprise), email=VALUES(email), password=VALUES(password)`,
-              [userId, full_name, entreprise || null, email, hashedPassword]
-            );
-          } catch (colErr) {
-            // Fallback si la colonne entreprise n'existe pas encore sur la base distante
-            if (colErr && /Unknown column 'entreprise'|ER_BAD_FIELD_ERROR/i.test(colErr.message || '')) {
+            if (entreprise) {
+              await rconn.execute('CREATE TABLE IF NOT EXISTS stock_entreprise (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) NOT NULL UNIQUE, created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP)');
+              await rconn.execute('INSERT INTO stock_entreprise (name) VALUES (?) ON DUPLICATE KEY UPDATE name = VALUES(name)', [entreprise]);
+              const [re] = await rconn.execute('SELECT id FROM stock_entreprise WHERE name = ? LIMIT 1', [entreprise]);
+              const entId = re && re.length ? re[0].id : null;
+              if (entId) {
+                try { await rconn.execute('ALTER TABLE users ADD COLUMN entreprise_id INT NULL'); } catch (_) {}
+                await rconn.execute(
+                  `INSERT INTO users (id, full_name, entreprise_id, email, password, phone_number, logo)
+                   VALUES (?, ?, ?, ?, ?, NULL, NULL)
+                   ON DUPLICATE KEY UPDATE full_name=VALUES(full_name), entreprise_id=VALUES(entreprise_id), email=VALUES(email), password=VALUES(password)`,
+                  [userId, full_name, entId, email, hashedPassword]
+                );
+              } else {
+                await rconn.execute(
+                  `INSERT INTO users (id, full_name, email, password, phone_number, logo)
+                   VALUES (?, ?, ?, ?, NULL, NULL)
+                   ON DUPLICATE KEY UPDATE full_name=VALUES(full_name), email=VALUES(email), password=VALUES(password)`,
+                  [userId, full_name, email, hashedPassword]
+                );
+              }
+            } else {
               await rconn.execute(
                 `INSERT INTO users (id, full_name, email, password, phone_number, logo)
                  VALUES (?, ?, ?, ?, NULL, NULL)
                  ON DUPLICATE KEY UPDATE full_name=VALUES(full_name), email=VALUES(email), password=VALUES(password)`,
                 [userId, full_name, email, hashedPassword]
               );
-            } else {
-              throw colErr;
             }
+          } catch (colErr) {
+            // Fallback legacy
+            await rconn.execute(
+              `INSERT INTO users (id, full_name, entreprise, email, password, phone_number, logo)
+               VALUES (?, ?, ?, ?, ?, NULL, NULL)
+               ON DUPLICATE KEY UPDATE full_name=VALUES(full_name), entreprise=VALUES(entreprise), email=VALUES(email), password=VALUES(password)`,
+              [userId, full_name, entreprise || null, email, hashedPassword]
+            ).catch(()=>{});
           }
           // Upsert profile by user_id (username unique may differ)
           const [rp] = await rconn.execute('SELECT id FROM profiles WHERE user_id = ?', [userId]);
@@ -202,10 +235,13 @@ router.post('/login', loginRateLimit, async (req, res) => {
     console.log('[auth.login] querying user by identifier');
     // SELECT avec JOIN pour récupérer username depuis profiles (si besoin)
     const [users] = await db.execute(
-  `SELECT u.id, u.email, u.password, u.full_name, u.entreprise, u.phone_number, u.logo,
+  `SELECT u.id, u.email, u.password, u.full_name,
+          COALESCE(e.name, u.entreprise) AS entreprise,
+          u.phone_number, u.logo,
           p.username, p.role, p.status
          FROM users u
          LEFT JOIN profiles p ON u.id = p.user_id
+         LEFT JOIN stock_entreprise e ON e.id = u.entreprise_id
         WHERE u.email = ? OR p.username = ?
         LIMIT 1`,
       [identifier, identifier]
@@ -265,10 +301,13 @@ router.get('/me', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
     const [rows] = await db.execute(
-  `SELECT u.id, u.email, u.full_name, u.entreprise, u.phone_number, u.logo,
-    p.username, p.role, p.status, p.subscription_expires, p.free_days, p.auto_sync
+  `SELECT u.id, u.email, u.full_name,
+          COALESCE(e.name, u.entreprise) AS entreprise,
+          u.phone_number, u.logo,
+          p.username, p.role, p.status, p.subscription_expires, p.free_days, p.auto_sync
          FROM users u
          LEFT JOIN profiles p ON u.id = p.user_id
+         LEFT JOIN stock_entreprise e ON e.id = u.entreprise_id
         WHERE u.id = ? LIMIT 1`,
       [userId]
     );

@@ -40,6 +40,70 @@ export function pushAllSSE({ onStart, onProgress, onError, onDone } = {}) {
   }
 }
 
+// Pull all from remote to local using SSE progress stream
+export function pullAllSSE({ onStart, onProgress, onError, onDone } = {}) {
+  try {
+    const token = (typeof localStorage !== 'undefined') ? localStorage.getItem('token') : null;
+    const qs = token ? `?token=${encodeURIComponent(token)}` : '';
+    const es = new EventSource(`/api/sync/pull-general/progress${qs}`);
+    es.addEventListener('start', (e) => {
+      try { const data = JSON.parse(e.data || '{}'); onStart && onStart(data); } catch {}
+    });
+    es.addEventListener('progress', (e) => {
+      try { const data = JSON.parse(e.data || '{}'); onProgress && onProgress(data); } catch {}
+    });
+    es.addEventListener('error', (e) => {
+      let msg = 'Erreur inconnue';
+      try { msg = JSON.parse(e.data || '{}')?.message || msg; } catch {}
+      onError && onError(msg);
+      try { es.close(); } catch {}
+    });
+    es.addEventListener('done', (e) => {
+      let payload = {};
+      try { payload = JSON.parse(e.data || '{}'); } catch {}
+      onDone && onDone(payload);
+      try { es.close(); } catch {}
+    });
+    es.onerror = () => { /* handled above */ };
+    return { close() { try { es.close(); } catch {} } };
+  } catch (e) {
+    onError && onError(e?.message || String(e));
+    return { close() {} };
+  }
+}
+
+// Pull-all from remote to local with SSE progress (matches backend /api/sync/pull-general/progress)
+export function pullAllSSE({ onStart, onProgress, onError, onDone } = {}) {
+  try {
+    const token = (typeof localStorage !== 'undefined') ? localStorage.getItem('token') : null;
+    const qs = token ? `?token=${encodeURIComponent(token)}` : '';
+    const es = new EventSource(`/api/sync/pull-general/progress${qs}`);
+    es.addEventListener('start', (e) => {
+      try { const data = JSON.parse(e.data || '{}'); onStart && onStart(data); } catch {}
+    });
+    es.addEventListener('progress', (e) => {
+      try { const data = JSON.parse(e.data || '{}'); onProgress && onProgress(data); } catch {}
+    });
+    es.addEventListener('error', (e) => {
+      let msg = 'Erreur inconnue';
+      try { msg = JSON.parse(e.data || '{}')?.message || msg; } catch {}
+      onError && onError(msg);
+      try { es.close(); } catch {}
+    });
+    es.addEventListener('done', (e) => {
+      let payload = {};
+      try { payload = JSON.parse(e.data || '{}'); } catch {}
+      onDone && onDone(payload);
+      try { es.close(); } catch {}
+    });
+    es.onerror = () => { /* handled via event listeners */ };
+    return { close() { try { es.close(); } catch {} } };
+  } catch (e) {
+    onError && onError(e?.message || String(e));
+    return { close() {} };
+  }
+}
+
 export async function pushClients() {
   const { data } = await api.post('/api/sync/push/clients');
   return data;

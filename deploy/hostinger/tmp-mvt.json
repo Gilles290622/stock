@@ -1,0 +1,8 @@
+{
+  "date": "2025-10-20",
+  "type": "entree",
+  "designation_name": "TEST PRODUIT API",
+  "quantite": 2,
+  "prix": 1000,
+  "client_name": "Client API"
+}

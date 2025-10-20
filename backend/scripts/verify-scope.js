@@ -69,6 +69,21 @@ async function main() {
     console.log(`clients/${cid}/releve status =>`, relRes.status);
     console.log(`clients/${cid}/releve body (first 3) =>`, Array.isArray(relParsed) ? relParsed.slice(0,3) : relParsed);
   }
+
+  // Designations checks
+  const dCountRes = await fetch(`${base}/api/designations/count`, { headers });
+  const dCount = await j(dCountRes);
+  console.log('designations/count =>', dCount);
+
+  const dListRes = await fetch(`${base}/api/designations`, { headers });
+  const dList = await j(dListRes);
+  console.log('designations (first 3) =>', Array.isArray(dList) ? dList.slice(0, 3) : dList);
+
+  if (Array.isArray(dList) && dList.length > 0) {
+    const did = dList[0].id;
+    const dGetRes = await fetch(`${base}/api/designations/${did}`, { headers });
+    console.log(`designations/${did} status =>`, dGetRes.status);
+  }
 }
 
 main()

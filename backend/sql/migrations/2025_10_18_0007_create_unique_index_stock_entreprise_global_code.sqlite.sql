@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_entreprise_global_code ON stock_entreprise(global_code);

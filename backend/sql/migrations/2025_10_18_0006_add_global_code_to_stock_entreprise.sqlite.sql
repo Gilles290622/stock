@@ -1,0 +1,1 @@
+ALTER TABLE stock_entreprise ADD COLUMN global_code INTEGER;

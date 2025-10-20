@@ -53,7 +53,13 @@ function AppContent() {
           if (data.user.logo) {
             try { localStorage.setItem('user_logo', data.user.logo); } catch {}
           }
-          setUser(prev => ({ ...prev, ...data.user }));
+          // Ne pas écraser les champs existants par des valeurs null/undefined
+          setUser(prev => ({
+            ...prev,
+            ...data.user,
+            username: (data.user.username ?? prev?.username) || prev?.email || prev?.username,
+            role: (data.user.role ?? prev?.role) || prev?.role,
+          }));
         }
       } catch (e) {
         // silencieux, on laisse le token deco si 401
@@ -140,17 +146,18 @@ function AppContent() {
     return user ? children : <Navigate to="/login" />;
   };
 
+  const SYNC_ENABLED = (typeof import.meta !== 'undefined' && import.meta.env && String(import.meta.env.VITE_SYNC_ENABLED).toLowerCase() === 'true');
   return (
     <div className="min-h-screen flex flex-col bg-slate-50">
-      {(autoPull.running || autoSync.running) && (
+      {SYNC_ENABLED && (autoPull.running || autoSync.running) && (
         <FullScreenLoader title="Synchronisation avec la base distante" percent={autoSync.running ? autoSync.percent : autoPull.percent} detail={autoSync.running ? autoSync.detail : autoPull.detail} />
       )}
       <Header
-        username={user?.username}
+        username={user?.username || user?.email || 'Utilisateur'}
         userLogo={user?.logo}
         userNumber={user?.numero}
         onLogout={handleLogout}
-        showSync={true}
+        showSync={SYNC_ENABLED}
         userId={user?.id}
         role={user?.role}
         entreprise={user?.entreprise}
@@ -246,7 +253,7 @@ export default function App() {
   try {
     if (typeof window !== 'undefined') {
       const p = window.location && window.location.pathname ? window.location.pathname : '/';
-      if (!p.startsWith('/stock/')) {
+      if (!p.startsWith('/stock')) {
         basename = '/';
       }
     }
