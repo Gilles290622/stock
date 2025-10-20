@@ -124,13 +124,18 @@ const StockTable = ({
                   >
                     {idx + 1}
                   </td>
-                  {/* Date */}
+                  {/* Date + mini-heure d'enregistrement */}
                   <td
                     className="py-3 px-4 border-b cursor-pointer"
                     title={isSelectable ? "Sélectionner/Désélectionner la ligne" : row.kind === "achat" ? "Achat" : "Paiement"}
                     onClick={() => isSelectable && onToggleSelect(row.id, row.kind)}
                   >
-                   {isoToFr(row.date)}
+                    <div className="leading-tight">
+                      <div>{isoToFr(row.date)}</div>
+                      {row.created_time ? (
+                        <div className="text-[11px] text-slate-500 mt-0.5">{row.created_time}</div>
+                      ) : null}
+                    </div>
                   </td>
                   {/* Type */}
                   <td

@@ -205,6 +205,8 @@ router.get('/', authenticateToken, async (req, res) => {
         sm.id,
         sm.user_id,
         strftime('%Y-%m-%d', sm.date) AS date,
+        sm.created_at AS created_at,
+        strftime('%H:%M', sm.created_at) AS created_time,
         sm.type,
         sm.designation_id,
         sm.stock,

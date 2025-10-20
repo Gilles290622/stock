@@ -555,7 +555,8 @@ if (preg_match('#^/api/stockMouvements(?:/(\d+))?$#', $path, $m)) {
                    sm.montant,
                    sm.stock,
                    sm.stockR,
-                   sm.created_at
+         sm.created_at,
+         DATE_FORMAT(sm.created_at, '%H:%i') AS created_time
             FROM stock_mouvements sm
             LEFT JOIN stock_designations d ON d.id = sm.designation_id AND d.user_id = sm.user_id
             LEFT JOIN stock_clients c ON c.id = sm.client_id AND c.user_id = sm.user_id
