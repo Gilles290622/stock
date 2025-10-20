@@ -560,7 +560,7 @@ if (preg_match('#^/api/stockMouvements(?:/(\d+))?$#', $path, $m)) {
             LEFT JOIN stock_designations d ON d.id = sm.designation_id AND d.user_id = sm.user_id
             LEFT JOIN stock_clients c ON c.id = sm.client_id AND c.user_id = sm.user_id
             WHERE $where
-            ORDER BY sm.date DESC, sm.id DESC
+            ORDER BY sm.created_at DESC, sm.id DESC
             LIMIT 200";
     try { $stmt = $pdo->prepare($sql); $stmt->execute($params); json($stmt->fetchAll()); }
     catch (Exception $e) {

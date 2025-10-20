@@ -226,7 +226,7 @@ router.get('/', authenticateToken, async (req, res) => {
       WHERE (sm.global_id = ? OR (? IS NULL AND sm.user_id IN (
                SELECT id FROM users u2 WHERE COALESCE(u2.entreprise,'') = ?
              )))
-      ORDER BY sm.date DESC, sm.id DESC
+  ORDER BY sm.created_at DESC, sm.id DESC
       `,
       [entGlobal, entGlobal, entName]
     );
