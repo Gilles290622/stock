@@ -13,7 +13,7 @@ export default function Header({ username, userLogo, userNumber, onLogout, showS
   const [entreprise, setEntreprise] = useState(initialEntreprise || '');
   const [savingEnt, setSavingEnt] = useState(false);
   const [entMsg, setEntMsg] = useState('');
-  const [remoteInfo, setRemoteInfo] = useState({ checking: false, hasUpdates: false });
+  const [remoteInfo, setRemoteInfo] = useState({ checking: false, hasUpdates: false, enabled: true });
 
   useEffect(() => { setEntreprise(initialEntreprise || ''); }, [initialEntreprise]);
 
@@ -26,9 +26,9 @@ export default function Header({ username, userLogo, userNumber, onLogout, showS
         setRemoteInfo(prev => ({ ...prev, checking: true }));
         const { data } = await api.get('/api/sync/remote-summary');
         if (stop) return;
-        setRemoteInfo({ checking: false, hasUpdates: !!data?.hasUpdates });
+        setRemoteInfo({ checking: false, hasUpdates: !!data?.hasUpdates, enabled: (typeof data?.enabled === 'boolean' ? data.enabled : true) });
       } catch {
-        if (stop) return; setRemoteInfo({ checking: false, hasUpdates: false });
+        if (stop) return; setRemoteInfo({ checking: false, hasUpdates: false, enabled: false });
       }
     }
     // au chargement + toutes les 2 minutes
@@ -222,8 +222,23 @@ export default function Header({ username, userLogo, userNumber, onLogout, showS
             )}
             {/* Indicateur de nouveautés distantes */}
             {!isAdmin && showSync && (
-              <span className={`text-xs px-2.5 py-1 rounded-md border ${remoteInfo.hasUpdates ? 'bg-amber-50 text-amber-900 border-amber-300' : 'bg-slate-50 text-slate-600 border-slate-200'}`} title="État des nouveautés distantes (vérification périodique)">
-                {remoteInfo.checking ? 'Vérification…' : (remoteInfo.hasUpdates ? 'Nouveautés disponibles' : 'À jour')}
+              <span
+                className={`text-xs px-2.5 py-1 rounded-md border ${
+                  remoteInfo.checking
+                    ? 'bg-slate-50 text-slate-600 border-slate-200'
+                    : (!remoteInfo.enabled
+                        ? 'bg-slate-50 text-slate-500 border-slate-200'
+                        : (remoteInfo.hasUpdates
+                            ? 'bg-amber-50 text-amber-900 border-amber-300'
+                            : 'bg-slate-50 text-slate-600 border-slate-200'))
+                }`}
+                title="État des nouveautés distantes (vérification périodique)"
+              >
+                {remoteInfo.checking
+                  ? 'Vérification…'
+                  : (!remoteInfo.enabled
+                      ? 'Synchronisation désactivée'
+                      : (remoteInfo.hasUpdates ? 'Nouveautés disponibles' : 'À jour'))}
               </span>
             )}
             {/* MAJ SOURCE - visible uniquement pour l'utilisateur 7 et non admin */}

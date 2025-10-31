@@ -367,6 +367,7 @@ if ($path === '/api/stockFlux' && $method === 'GET') {
       'mouvement' AS kind,
       sm.id AS id,
       sm.created_at AS created_at,
+      DATE_FORMAT(sm.created_at,'%H:%i') AS created_time,
       DATE_FORMAT(sm.date,'%Y-%m-%d') AS date,
       sm.type AS type,
       sm.designation_id AS designation_id,
@@ -393,6 +394,7 @@ if ($path === '/api/stockFlux' && $method === 'GET') {
       CASE WHEN sm.type = 'entree' THEN 'achat' ELSE 'paiement' END AS kind,
       sp.id AS id,
       sp.created_at AS created_at,
+      DATE_FORMAT(sp.created_at,'%H:%i') AS created_time,
       DATE_FORMAT(sp.date,'%Y-%m-%d') AS date,
       sm.type AS type,
       sm.designation_id AS designation_id,
@@ -420,6 +422,7 @@ if ($path === '/api/stockFlux' && $method === 'GET') {
       'depense' AS kind,
       sd.id AS id,
       sd.created_at AS created_at,
+      DATE_FORMAT(sd.created_at,'%H:%i') AS created_time,
       DATE_FORMAT(sd.date,'%Y-%m-%d') AS date,
       'depense' AS type,
       NULL AS designation_id,
@@ -458,6 +461,8 @@ if ($path === '/api/stockFlux' && $method === 'GET') {
       $balance = $montant; // encaissement d'une vente (sortie)
     } elseif ($kind === 'achat' || $kind === 'depense') {
       $balance = -$montant; // achat marchandise ou dépense
+    } elseif ($kind === 'mouvement') {
+      $balance = ($type === 'entree') ? $montant : -$montant; // mouvement de stock
     } else {
       $balance = 0.0; // lignes "mouvement" neutres pour la caisse
     }
@@ -481,11 +486,14 @@ if ($path === '/api/stockFlux' && $method === 'GET') {
   $depenses = array_values(array_filter($withBalances, fn($row) => $row['kind'] === 'depense' && $row['date'] === $date));
   $encaissementsDuJour = array_values(array_filter($withBalances, fn($row) => $row['kind'] === 'paiement' && $row['date'] === $date));
   $recouvrements = array_values(array_filter($withBalances, fn($row) => $row['kind'] === 'paiement' && $row['date'] !== $date));
+  // Nouvelle section: ventes du jour = mouvements de type 'sortie' du jour
+  $ventesDuJour = array_values(array_filter($withBalances, fn($row) => $row['kind'] === 'mouvement' && strtolower($row['type'] ?? '') === 'sortie' && $row['date'] === $date));
 
   $totalAchats = array_reduce($achats, fn($s,$r)=> $s + abs((float)$r['montant']), 0.0);
   $totalDepenses = array_reduce($depenses, fn($s,$r)=> $s + abs((float)$r['montant']), 0.0);
   $totalEncaissements = array_reduce($encaissementsDuJour, fn($s,$r)=> $s + (float)$r['montant'], 0.0);
   $totalRecouvrements = array_reduce($recouvrements, fn($s,$r)=> $s + (float)$r['montant'], 0.0);
+  $totalVentes = array_reduce($ventesDuJour, fn($s,$r)=> $s + abs((float)$r['montant']), 0.0);
   $totalEntrees = $totalEncaissements + $totalRecouvrements;
   $totalSorties = $totalAchats + $totalDepenses;
   $soldeCloture = $totalEntrees - $totalSorties;
@@ -498,10 +506,12 @@ if ($path === '/api/stockFlux' && $method === 'GET') {
       'depenses' => $depenses,
       'encaissementsDuJour' => $encaissementsDuJour,
       'recouvrements' => $recouvrements,
+      'ventesDuJour' => $ventesDuJour,
       'totalAchats' => $totalAchats,
       'totalDepenses' => $totalDepenses,
       'totalEncaissements' => $totalEncaissements,
       'totalRecouvrements' => $totalRecouvrements,
+      'totalVentes' => $totalVentes,
       'totalEntrees' => $totalEntrees,
       'totalSorties' => $totalSorties,
       'soldeCloture' => $soldeCloture,
@@ -985,6 +995,106 @@ if (preg_match('#^/api/stockPaiements(?:/(\d+))?$#', $uri, $m)) {
   }
 
   // Méthode non supportée sur cette ressource
+  json(['error' => 'Méthode non supportée'], 405);
+}
+
+// --- stockDepenses CRUD minimal (parité UI en mode Hostinger)
+if (preg_match('#^/api/stockDepenses(?:/(\d+))?$#', $path, $m)) {
+  $p = get_token_payload(); if (!$p) json(['error'=>'Token manquant ou invalide'], 401);
+  $pdo = db();
+  $id = isset($m[1]) ? intval($m[1]) : 0;
+
+  // GET /api/stockDepenses?date=YYYY-MM-DD (optionnel)
+  if ($method === 'GET' && $id === 0) {
+    $date = isset($_GET['date']) ? trim((string)$_GET['date']) : '';
+    try {
+      if ($date !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) json(['error' => 'Format de date invalide (YYYY-MM-DD)'], 400);
+      if ($date !== '') {
+        $stmt = $pdo->prepare("SELECT id, DATE_FORMAT(`date`,'%Y-%m-%d') AS date, libelle, montant, destinataire, created_at FROM stock_depenses WHERE user_id = ? AND DATE(`date`) = ? ORDER BY id DESC");
+        $stmt->execute([$p['id'], $date]);
+      } else {
+        $stmt = $pdo->prepare("SELECT id, DATE_FORMAT(`date`,'%Y-%m-%d') AS date, libelle, montant, destinataire, created_at FROM stock_depenses WHERE user_id = ? ORDER BY id DESC LIMIT 200");
+        $stmt->execute([$p['id']]);
+      }
+      $rows = $stmt->fetchAll();
+      foreach ($rows as &$r) { $r['montant'] = (float)$r['montant']; }
+      json($rows);
+    } catch (Exception $e) {
+      $msg = $e->getMessage();
+      if (stripos($msg, "doesn't exist") !== false || stripos($msg, 'no such table') !== false || stripos($msg, 'exist') !== false) {
+        json([]);
+      }
+      json(['error'=>'db','message'=>$msg], 500);
+    }
+  }
+
+  // POST /api/stockDepenses
+  if ($method === 'POST' && $id === 0) {
+    $b = json_decode(file_get_contents('php://input'), true) ?: [];
+    $isoDate = isset($b['date']) ? trim((string)$b['date']) : date('Y-m-d');
+    $libelle = isset($b['libelle']) ? trim((string)$b['libelle']) : '';
+    $montant = isset($b['montant']) ? (float)$b['montant'] : 0;
+    $dest = isset($b['destinataire']) ? trim((string)$b['destinataire']) : null;
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $isoDate)) json(['error' => 'Format de date invalide (YYYY-MM-DD)'], 400);
+    if ($libelle === '') json(['error' => 'Libellé requis'], 400);
+    if (!is_finite($montant) || $montant < 0) json(['error' => 'Montant doit être un nombre >= 0'], 400);
+    $montant = round($montant, 2);
+    try {
+      $stmt = $pdo->prepare('INSERT INTO stock_depenses (user_id, `date`, libelle, montant, destinataire, created_at) VALUES (?, ?, ?, ?, ?, NOW())');
+      $stmt->execute([$p['id'], $isoDate, $libelle, $montant, $dest]);
+      $newId = (int)$pdo->lastInsertId();
+      json(['id'=>$newId, 'date'=>$isoDate, 'libelle'=>$libelle, 'montant'=>$montant, 'destinataire'=>$dest], 201);
+    } catch (Exception $e) {
+      json(['error'=>'db','message'=>$e->getMessage()], 500);
+    }
+  }
+
+  // PATCH /api/stockDepenses/:id
+  if ($method === 'PATCH' && $id > 0) {
+    $b = json_decode(file_get_contents('php://input'), true) ?: [];
+    $fields = [];$values = [];
+    if (array_key_exists('date', $b)) {
+      $d = trim((string)$b['date']);
+      if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $d)) json(['error' => 'Format de date invalide (YYYY-MM-DD)'], 400);
+      $fields[] = '`date` = ?'; $values[] = $d;
+    }
+    if (array_key_exists('libelle', $b)) {
+      $l = trim((string)$b['libelle']); if ($l === '') json(['error' => 'Libellé requis'], 400);
+      $fields[] = 'libelle = ?'; $values[] = $l;
+    }
+    if (array_key_exists('montant', $b)) {
+      $mval = (float)$b['montant']; if (!is_finite($mval) || $mval < 0) json(['error' => 'Montant doit être un nombre >= 0'], 400);
+      $fields[] = 'montant = ?'; $values[] = round($mval, 2);
+    }
+    if (array_key_exists('destinataire', $b)) { $fields[] = 'destinataire = ?'; $values[] = ($b['destinataire'] !== null ? trim((string)$b['destinataire']) : null); }
+    if (count($fields) === 0) json(['error' => 'Aucune donnée à mettre à jour'], 400);
+    try {
+      // Protéger par user_id
+      $stmt = $pdo->prepare('UPDATE stock_depenses SET '.implode(', ', $fields).' WHERE id = ? AND user_id = ?');
+      $values[] = $id; $values[] = $p['id'];
+      $stmt->execute($values);
+      // Retourner ligne mise à jour
+      $stmt = $pdo->prepare("SELECT id, DATE_FORMAT(`date`,'%Y-%m-%d') AS date, libelle, montant, destinataire FROM stock_depenses WHERE id = ? AND user_id = ? LIMIT 1");
+      $stmt->execute([$id, $p['id']]); $row = $stmt->fetch();
+      if (!$row) json(['error'=>'Not found'], 404);
+      $row['montant'] = (float)$row['montant'];
+      json($row);
+    } catch (Exception $e) {
+      json(['error'=>'db','message'=>$e->getMessage()], 500);
+    }
+  }
+
+  // DELETE /api/stockDepenses/:id
+  if ($method === 'DELETE' && $id > 0) {
+    try {
+      $stmt = $pdo->prepare('DELETE FROM stock_depenses WHERE id = ? AND user_id = ?');
+      $stmt->execute([$id, $p['id']]);
+      json(['success'=>true]);
+    } catch (Exception $e) {
+      json(['error'=>'db','message'=>$e->getMessage()], 500);
+    }
+  }
+
   json(['error' => 'Méthode non supportée'], 405);
 }
 

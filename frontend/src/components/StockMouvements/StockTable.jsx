@@ -132,9 +132,12 @@ const StockTable = ({
                   >
                     <div className="leading-tight">
                       <div>{isoToFr(row.date)}</div>
-                      {row.created_time ? (
-                        <div className="text-[11px] text-slate-500 mt-0.5">{row.created_time}</div>
-                      ) : null}
+                      {(() => {
+                        const t = row.created_time || (row.created_at && typeof row.created_at === 'string' ? row.created_at.slice(11,16) : '');
+                        return t ? (
+                          <div className="text-[11px] text-slate-500 mt-0.5">{t}</div>
+                        ) : null;
+                      })()}
                     </div>
                   </td>
                   {/* Type */}

@@ -1,8 +1,11 @@
+const path = require('path');
+
 module.exports = {
   apps: [
     {
       name: 'stock-backend',
-      cwd: './backend',
+      // Use absolute cwd so PM2 can resolve node_modules even when started from Task Scheduler
+      cwd: path.resolve(__dirname, 'backend'),
       script: 'server.js',
       watch: false,
       autorestart: true,

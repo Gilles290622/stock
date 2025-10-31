@@ -110,6 +110,39 @@ const PointJourModal = ({ open, onClose, caissier, defaultDate, token }) => {
                 </table>
               </section>
 
+              {/* Ventes du jour (mouvements de sorties du jour) */}
+              <section className="mb-8 pb-4 border-t-2 border-amber-200">
+                <div className="font-bold text-amber-900 bg-amber-100 rounded-t px-2 py-1 mb-1 inline-block">Ventes du jour</div>
+                <table className="w-full border-collapse">
+                  <thead>
+                    <tr>
+                      <th className="text-left py-1 px-2 bg-amber-50">Heure</th>
+                      <th className="text-left py-1 px-2 bg-amber-50">Client</th>
+                      <th className="text-left py-1 px-2 bg-amber-50">Produit</th>
+                      <th className="text-left py-1 px-2 bg-amber-50">Quantité</th>
+                      <th className="text-left py-1 px-2 bg-amber-50">Prix</th>
+                      <th className="text-left py-1 px-2 bg-amber-50">Montant (F CFA)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(point.ventesDuJour || []).map(v => (
+                      <tr key={"vente" + v.id}>
+                        <td className="py-1 px-2">{formatHeure(v.created_at)}</td>
+                        <td className="py-1 px-2">{capitalize(v.client_name)}</td>
+                        <td className="py-1 px-2">{capitalize(v.designation_name)}</td>
+                        <td className="py-1 px-2">{formatInt(v.quantite)}</td>
+                        <td className="py-1 px-2">{formatInt(v.prix)}</td>
+                        <td className="py-1 px-2 text-right font-bold">{formatInt(v.montant)}</td>
+                      </tr>
+                    ))}
+                    <tr className="bg-amber-50 font-bold">
+                      <td colSpan={5} className="text-right py-1 px-2">Total ventes du jour</td>
+                      <td className="text-right py-1 px-2">{formatInt(point.totalVentes || 0)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </section>
+
               {/* Encaissements du jour */}
               <section className="mb-8 pb-4 border-t-2 border-emerald-200">
                 <div className="font-bold text-green-900 bg-emerald-100 rounded-t px-2 py-1 mb-1 inline-block">Encaissements du jour</div>

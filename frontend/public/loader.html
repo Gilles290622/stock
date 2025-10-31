@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Démarrage…</title>
+  <link rel="icon" href="jtservices.ico" />
+  <style>
+    html,body{height:100%;margin:0;background:#0b0f17;color:#e7ecf3;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+    .wrap{height:100%;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:18px}
+    .logo{width:56px;height:56px;border-radius:12px;box-shadow:0 0 0 1px #203047,0 6px 30px rgba(0,0,0,.35);overflow:hidden}
+    .spinner{width:42px;height:42px;border:4px solid #203047;border-top-color:#34d399;border-radius:50%;animation:spin 1s linear infinite}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .hint{opacity:.7;font-size:14px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <img class="logo" src="jtservices.jpg" alt="Logo" />
+    <div class="spinner"></div>
+    <div class="hint">Initialisation en cours…</div>
+  </div>
+<script>
+(function(){
+  const params = new URLSearchParams(location.search);
+  const target = params.get('target') || 'http://localhost/stock';
+  const ends = ['http://127.0.0.1','http://127.0.0.1:3001'];
+  let tries = 0;
+  async function ping(){
+    tries++;
+    for (const base of ends){
+      try{
+        const r = await fetch(base + '/api/health',{cache:'no-store'});
+        if(r.ok){
+          // Redirige vers la même route mais sur l'origine qui a répondu
+          try {
+            const t = new URL(target);
+            const b = new URL(base);
+            t.protocol = b.protocol; t.hostname = b.hostname; t.port = b.port;
+            location.replace(t.toString());
+          } catch {
+            location.replace(base + '/stock');
+          }
+          return;
+        }
+      }catch{}
+    }
+    setTimeout(ping, tries < 5 ? 600 : 1200);
+  }
+  ping();
+})();
+</script>
+</body>
+</html>

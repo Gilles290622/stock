@@ -80,7 +80,8 @@ try {
     $backendDir = Join-Path $repo 'backend'
     $serverJs = Join-Path $backendDir 'server.js'
     if (-not (Test-Path $serverJs)) { Write-Log "server.js introuvable: $serverJs"; throw 'server.js introuvable' }
-    $env:PORT = '80'
+  # Forcer le port 80 en fallback pour rester conforme à l'exigence
+  if (-not $env:PORT -or $env:PORT -eq '') { $env:PORT = '80' }
     if ($nodeCmd) {
       Write-Log "Start-Process node direct: $nodeCmd | cwd=$backendDir"
       try {

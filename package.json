@@ -8,6 +8,12 @@
     "prod": "npm run build && node backend/server.js",
     "pm2:start": "pm2 start pm2-ecosystem.config.js --only stock-backend",
     "pm2:restart": "pm2 restart stock-backend",
-    "pm2:logs": "pm2 logs stock-backend --lines 200"
+    "pm2:logs": "pm2 logs stock-backend --lines 200",
+    "make:favicon": "node scripts/make-favicon-ico.js",
+    "prune:scripts": "node scripts/prune-dev-scripts.js"
+  },
+  "devDependencies": {
+    "sharp": "^0.33.5",
+    "to-ico": "^1.1.5"
   }
 }

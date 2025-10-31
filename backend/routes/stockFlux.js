@@ -29,6 +29,7 @@ router.get('/', authenticateToken, async (req, res) => {
           'mouvement' AS kind,
           sm.id AS id,
           sm.created_at AS created_at,
+          strftime('%H:%M', sm.created_at) AS created_time,
           strftime('%Y-%m-%d', sm.date) AS date,
           sm.type AS type,
           sm.designation_id AS designation_id,
@@ -59,6 +60,7 @@ router.get('/', authenticateToken, async (req, res) => {
           CASE WHEN sm.type = 'entree' THEN 'achat' ELSE 'paiement' END AS kind,
           sp.id AS id,
           sp.created_at AS created_at,
+          strftime('%H:%M', sp.created_at) AS created_time,
           strftime('%Y-%m-%d', sp.date) AS date,
           sm.type AS type,
           sm.designation_id AS designation_id,
@@ -91,6 +93,7 @@ router.get('/', authenticateToken, async (req, res) => {
           'depense' AS kind,
           sd.id AS id,
           sd.created_at AS created_at,
+          strftime('%H:%M', sd.created_at) AS created_time,
           strftime('%Y-%m-%d', sd.date) AS date,
           'depense' AS type,
           NULL AS designation_id,
@@ -140,16 +143,19 @@ router.get('/', authenticateToken, async (req, res) => {
       return (a.id || 0) < (b.id || 0) ? 1 : -1;
     });
 
-    // Construction du résumé point caisse pour la date demandée
+  // Construction du résumé point caisse pour la date demandée
     const achats = rows.filter(row => row.kind === "achat" && row.date === dateJour);
     const depenses = rows.filter(row => row.kind === "depense" && row.date === dateJour);
     const encaissementsDuJour = rows.filter(row => row.kind === "paiement" && row.date === dateJour);
     const recouvrements = rows.filter(row => row.kind === "paiement" && row.date !== dateJour);
+  // Nouvelle section: ventes du jour (mouvements de sorties du jour)
+  const ventesDuJour = rows.filter(row => row.kind === 'mouvement' && String(row.type).toLowerCase() === 'sortie' && row.date === dateJour);
 
     const totalAchats = achats.reduce((sum, r) => sum + Math.abs(Number(r.montant)), 0);
     const totalDepenses = depenses.reduce((sum, r) => sum + Math.abs(Number(r.montant)), 0);
     const totalEncaissements = encaissementsDuJour.reduce((sum, r) => sum + Number(r.montant), 0);
     const totalRecouvrements = recouvrements.reduce((sum, r) => sum + Number(r.montant), 0);
+  const totalVentes = ventesDuJour.reduce((sum, r) => sum + Math.abs(Number(r.montant)), 0);
 
     const totalEntrees = totalEncaissements + totalRecouvrements;
     const totalSorties = totalAchats + totalDepenses;
@@ -163,10 +169,12 @@ router.get('/', authenticateToken, async (req, res) => {
         depenses,
         encaissementsDuJour,
         recouvrements,
+        ventesDuJour,
         totalAchats,
         totalDepenses,
         totalEncaissements,
         totalRecouvrements,
+        totalVentes,
         totalEntrees,
         totalSorties,
         soldeCloture,
@@ -231,6 +239,7 @@ router.get('/search', authenticateToken, async (req, res) => {
           'mouvement' AS kind,
           sm.id AS id,
           sm.created_at AS created_at,
+          strftime('%H:%M', sm.created_at) AS created_time,
           strftime('%Y-%m-%d', sm.date) AS date,
           sm.type AS type,
           sm.designation_id AS designation_id,
@@ -260,6 +269,7 @@ router.get('/search', authenticateToken, async (req, res) => {
           CASE WHEN sm.type = 'entree' THEN 'achat' ELSE 'paiement' END AS kind,
           sp.id AS id,
           sp.created_at AS created_at,
+          strftime('%H:%M', sp.created_at) AS created_time,
           strftime('%Y-%m-%d', sp.date) AS date,
           sm.type AS type,
           sm.designation_id AS designation_id,
@@ -290,6 +300,7 @@ router.get('/search', authenticateToken, async (req, res) => {
           'depense' AS kind,
           sd.id AS id,
           sd.created_at AS created_at,
+          strftime('%H:%M', sd.created_at) AS created_time,
           strftime('%Y-%m-%d', sd.date) AS date,
           'depense' AS type,
           NULL AS designation_id,

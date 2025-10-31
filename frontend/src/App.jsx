@@ -146,7 +146,19 @@ function AppContent() {
     return user ? children : <Navigate to="/login" />;
   };
 
-  const SYNC_ENABLED = (typeof import.meta !== 'undefined' && import.meta.env && String(import.meta.env.VITE_SYNC_ENABLED).toLowerCase() === 'true');
+  // Sync buttons visibility:
+  // - Controlled by VITE_SYNC_ENABLED (true in dev, false in prod)
+  // - Additionally, force-enable when running locally (localhost/127.0.0.1 or port 3001)
+  const ENV_SYNC_ENABLED = (typeof import.meta !== 'undefined' && import.meta.env && String(import.meta.env.VITE_SYNC_ENABLED).toLowerCase() === 'true');
+  let RUNTIME_LOCAL = false;
+  try {
+    if (typeof window !== 'undefined' && window.location) {
+      const host = String(window.location.hostname || '').toLowerCase();
+      const port = String(window.location.port || '');
+      RUNTIME_LOCAL = (/^(localhost|127\.0\.0\.1|::1)$/).test(host) || port === '3001';
+    }
+  } catch {}
+  const SYNC_ENABLED = ENV_SYNC_ENABLED || RUNTIME_LOCAL;
   return (
     <div className="min-h-screen flex flex-col bg-slate-50">
       {SYNC_ENABLED && (autoPull.running || autoSync.running) && (

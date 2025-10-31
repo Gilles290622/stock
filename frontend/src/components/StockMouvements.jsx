@@ -25,6 +25,7 @@ import ClientHistoryModal from "./StockMouvements/ClientHistoryModal";
 import PaymentModal from "./StockMouvements/PaymentModal";
 import StockTable from "./StockMouvements/StockTable";
 import InvoiceModal from "./StockMouvements/InvoiceModal";
+import { pushAllSSE, pullAllSSE } from "../api/sync";
 import {
   DocumentDuplicateIcon,     // Facture
   BanknotesIcon,             // Journal caisse
@@ -141,6 +142,19 @@ const StockMouvements = ({ user }) => {
   const [invoiceLoading, setInvoiceLoading] = useState(false);
   const [clientInfo, setClientInfo] = useState({ name: "", address: "", phone: "", email: "" });
   const [invoiceNumber, setInvoiceNumber] = useState("");
+
+  // Sync (local <-> distant)
+  const [syncRunning, setSyncRunning] = useState(false);
+  const [syncMsg, setSyncMsg] = useState("");
+  const syncCtrlRef = useRef(null);
+  const isLocalEnv = useMemo(() => {
+    try {
+      const h = window.location.hostname || "";
+      // Afficher les boutons en local uniquement
+      if (/(^|\.)jts-services\.shop$/i.test(h)) return false; // prod domaine
+      return h === "localhost" || h === "127.0.0.1" || h === "stock";
+    } catch { return false; }
+  }, []);
 
   const token = useMemo(() => localStorage.getItem("token"), []);
   const currentUserId = useMemo(() => {
@@ -853,7 +867,7 @@ const saveEdit = async (e) => {
       {selectionError && <p className="text-red-600 mt-3">{selectionError}</p>}
 
       {/* Footer actions */}
-      <div className="flex flex-wrap items-center gap-3 border-t pt-4">
+  <div className="flex flex-wrap items-center gap-3 border-t pt-4">
   {hasSelection && sameClientSelection && (
     <button
       onClick={openInvoice}
@@ -924,6 +938,71 @@ const saveEdit = async (e) => {
     <ClockIcon className="w-5 h-5 text-white" />
     Historique
   </button>
+
+  {isLocalEnv && (
+    <>
+      <span className="mx-2">|</span>
+      <button
+        className="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 disabled:opacity-50"
+        disabled={syncRunning}
+        onClick={() => {
+          if (syncRunning) return;
+          setSyncRunning(true); setSyncMsg("Début de publication...");
+          if (syncCtrlRef.current) { try { syncCtrlRef.current.close(); } catch {} }
+          syncCtrlRef.current = pushAllSSE({
+            onStart: (d) => setSyncMsg(d?.message || "Initialisation..."),
+            onProgress: (d) => setSyncMsg(d?.message || d?.phase || "En cours..."),
+            onError: (m) => { setSyncMsg(`Erreur: ${m}`); setSyncRunning(false); },
+            onDone: (d) => {
+              if (d && d.reason === 'remote_disabled') {
+                setSyncMsg('Synchronisation désactivée (aucun envoi).');
+              } else {
+                setSyncMsg(d?.message || "Publication terminée.");
+              }
+              setSyncRunning(false);
+              fetchMouvementsDuJour();
+            }
+          });
+        }}
+        type="button"
+        title="Publier la base locale vers la base distante"
+      >
+        {syncRunning ? "Publication..." : "Publier"}
+      </button>
+
+      <button
+        className="bg-slate-600 text-white px-4 py-2 rounded hover:bg-slate-700 disabled:opacity-50"
+        disabled={syncRunning}
+        onClick={() => {
+          if (syncRunning) return;
+          setSyncRunning(true); setSyncMsg("Début d'import...");
+          if (syncCtrlRef.current) { try { syncCtrlRef.current.close(); } catch {} }
+          syncCtrlRef.current = pullAllSSE({
+            onStart: (d) => setSyncMsg(d?.message || "Initialisation..."),
+            onProgress: (d) => setSyncMsg(d?.message || d?.phase || "En cours..."),
+            onError: (m) => { setSyncMsg(`Erreur: ${m}`); setSyncRunning(false); },
+            onDone: (d) => {
+              if (d && d.reason === 'remote_disabled') {
+                setSyncMsg('Synchronisation désactivée (aucun import).');
+              } else {
+                setSyncMsg(d?.message || "Import terminé.");
+              }
+              setSyncRunning(false);
+              fetchMouvementsDuJour();
+            }
+          });
+        }}
+        type="button"
+        title="Importer depuis la base distante vers la base locale"
+      >
+        {syncRunning ? "Import..." : "Importer"}
+      </button>
+
+      {syncMsg && (
+        <span className="text-sm text-slate-600 ml-2 select-none">{syncMsg}</span>
+      )}
+    </>
+  )}
 </div>
 
       {/* Modales */}

@@ -627,9 +627,18 @@ async function pullCategoriesFromRemote(lconn, rconn) {
   const [rows] = await queryWithTimeout(rconn, 'SELECT id, name FROM stock_categories ORDER BY id ASC', [], 20000);
   await lconn.beginTransaction();
   try {
-    await lconn.query('DELETE FROM stock_categories');
     for (const c of rows) {
-      await lconn.query('INSERT INTO stock_categories (id, name) VALUES (?, ?)', [c.id, c.name]);
+      // Upsert sans suppression: garder les catégories locales non présentes à distance
+      const [res] = await lconn.query('UPDATE stock_categories SET name = ? WHERE id = ?', [c.name, c.id]);
+      const updated = (res && (res.affectedRows > 0 || res.changes > 0));
+      if (!updated) {
+        try {
+          await lconn.query('INSERT INTO stock_categories (id, name) VALUES (?, ?)', [c.id, c.name]);
+        } catch (e) {
+          // Conflit unique: refaire un update en dernier recours
+          await lconn.query('UPDATE stock_categories SET name = ? WHERE id = ?', [c.name, c.id]);
+        }
+      }
     }
     await lconn.commit();
     return rows.length;
@@ -639,11 +648,42 @@ async function pullCategoriesFromRemote(lconn, rconn) {
 async function pullClientsFromRemote(userId, lconn, rconn) {
   const [rows] = await queryWithTimeout(rconn, 'SELECT id, user_id, name, address, phone, email FROM stock_clients WHERE user_id = ? ORDER BY id ASC', [userId], 20000);
   await ensureLocalUser(lconn, userId);
+  // Récupérer le code global d'entreprise pour tagger les lignes locales
+  let entGlobal = null;
+  try {
+    const [[ctx]] = await lconn.query(`SELECT e.global_code AS entGlobal FROM users u LEFT JOIN stock_entreprise e ON e.id = u.entreprise_id WHERE u.id = ?`, [userId]);
+    entGlobal = ctx ? ctx.entGlobal : null;
+  } catch {}
   await lconn.beginTransaction();
   try {
-    await lconn.query('DELETE FROM stock_clients WHERE user_id = ?', [userId]);
     for (const c of rows) {
-      await lconn.query('INSERT INTO stock_clients (id, user_id, name, address, phone, email) VALUES (?, ?, ?, ?, ?, ?)', [c.id, userId, c.name, c.address || null, c.phone || null, c.email || null]);
+      // Tente de mettre à jour en incluant global_id si disponible
+      let params = [c.name, c.address || null, c.phone || null, c.email || null, entGlobal, c.id, userId];
+      let updated = false;
+      try {
+        const [res] = await lconn.query('UPDATE stock_clients SET name = ?, address = ?, phone = ?, email = ?, global_id = ? WHERE id = ? AND user_id = ?', params);
+        updated = !!(res && (res.affectedRows > 0 || res.changes > 0));
+      } catch {
+        // Fallback sans global_id si colonne absente
+        params = [c.name, c.address || null, c.phone || null, c.email || null, c.id, userId];
+        const [res2] = await lconn.query('UPDATE stock_clients SET name = ?, address = ?, phone = ?, email = ? WHERE id = ? AND user_id = ?', params);
+        updated = !!(res2 && (res2.affectedRows > 0 || res2.changes > 0));
+      }
+      if (!updated) {
+        // Try insert avec global_id
+        try {
+          await lconn.query('INSERT INTO stock_clients (id, user_id, name, address, phone, email, global_id) VALUES (?, ?, ?, ?, ?, ?, ?)', [c.id, userId, c.name, c.address || null, c.phone || null, c.email || null, entGlobal]);
+        } catch (eIns) {
+          try {
+            // Fallback sans global_id
+            await lconn.query('INSERT INTO stock_clients (id, user_id, name, address, phone, email) VALUES (?, ?, ?, ?, ?, ?)', [c.id, userId, c.name, c.address || null, c.phone || null, c.email || null]);
+          } catch (_) {
+            // Conflit: forcer update final
+            const up = [c.name, c.address || null, c.phone || null, c.email || null, c.id, userId];
+            await lconn.query('UPDATE stock_clients SET name = ?, address = ?, phone = ?, email = ? WHERE id = ? AND user_id = ?', up);
+          }
+        }
+      }
     }
     await lconn.commit();
     return rows.length;
@@ -653,11 +693,39 @@ async function pullClientsFromRemote(userId, lconn, rconn) {
 async function pullDesignationsFromRemote(userId, lconn, rconn) {
   const [rows] = await queryWithTimeout(rconn, 'SELECT id, user_id, name, current_stock, categorie FROM stock_designations WHERE user_id = ? ORDER BY id ASC', [userId], 20000);
   await ensureLocalUser(lconn, userId);
+  // Code global d'entreprise
+  let entGlobal = null;
+  try {
+    const [[ctx]] = await lconn.query(`SELECT e.global_code AS entGlobal FROM users u LEFT JOIN stock_entreprise e ON e.id = u.entreprise_id WHERE u.id = ?`, [userId]);
+    entGlobal = ctx ? ctx.entGlobal : null;
+  } catch {}
   await lconn.beginTransaction();
   try {
-    await lconn.query('DELETE FROM stock_designations WHERE user_id = ?', [userId]);
     for (const d of rows) {
-      await lconn.query('INSERT INTO stock_designations (id, user_id, name, current_stock, categorie) VALUES (?, ?, ?, ?, ?)', [d.id, userId, d.name, Number(d.current_stock || 0), d.categorie || null]);
+      // Update avec global_id si possible
+      let setParams = [d.name, Number(d.current_stock || 0), d.categorie || null, entGlobal, d.id, userId];
+      let updated = false;
+      try {
+        const [res] = await lconn.query('UPDATE stock_designations SET name = ?, current_stock = ?, categorie = ?, global_id = ? WHERE id = ? AND user_id = ?', setParams);
+        updated = !!(res && (res.affectedRows > 0 || res.changes > 0));
+      } catch {
+        // Fallback sans global_id
+        setParams = [d.name, Number(d.current_stock || 0), d.categorie || null, d.id, userId];
+        const [res2] = await lconn.query('UPDATE stock_designations SET name = ?, current_stock = ?, categorie = ? WHERE id = ? AND user_id = ?', setParams);
+        updated = !!(res2 && (res2.affectedRows > 0 || res2.changes > 0));
+      }
+      if (!updated) {
+        try {
+          await lconn.query('INSERT INTO stock_designations (id, user_id, name, current_stock, categorie, global_id) VALUES (?, ?, ?, ?, ?, ?)', [d.id, userId, d.name, Number(d.current_stock || 0), d.categorie || null, entGlobal]);
+        } catch (eIns) {
+          try {
+            await lconn.query('INSERT INTO stock_designations (id, user_id, name, current_stock, categorie) VALUES (?, ?, ?, ?, ?)', [d.id, userId, d.name, Number(d.current_stock || 0), d.categorie || null]);
+          } catch (_) {
+            const up2 = [d.name, Number(d.current_stock || 0), d.categorie || null, d.id, userId];
+            await lconn.query('UPDATE stock_designations SET name = ?, current_stock = ?, categorie = ? WHERE id = ? AND user_id = ?', up2);
+          }
+        }
+      }
     }
     await lconn.commit();
     return rows.length;
@@ -667,14 +735,44 @@ async function pullDesignationsFromRemote(userId, lconn, rconn) {
 async function pullMouvementsFromRemote(userId, lconn, rconn) {
   const [rows] = await queryWithTimeout(rconn, `SELECT id, user_id, DATE_FORMAT(date,'%Y-%m-%d') as date, type, designation_id, quantite, prix, client_id, stock, stockR FROM stock_mouvements WHERE user_id = ? ORDER BY id ASC`, [userId], 20000);
   await ensureLocalUser(lconn, userId);
+  let entGlobal = null;
+  try {
+    const [[ctx]] = await lconn.query(`SELECT e.global_code AS entGlobal FROM users u LEFT JOIN stock_entreprise e ON e.id = u.entreprise_id WHERE u.id = ?`, [userId]);
+    entGlobal = ctx ? ctx.entGlobal : null;
+  } catch {}
   await lconn.beginTransaction();
   try {
-    await lconn.query('DELETE FROM stock_mouvements WHERE user_id = ?', [userId]);
     for (const m of rows) {
-      await lconn.query(
-        'INSERT INTO stock_mouvements (id, user_id, date, type, designation_id, quantite, prix, client_id, stock, stockR) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [m.id, userId, m.date, m.type, m.designation_id || null, Number(m.quantite||0), Number(m.prix||0), m.client_id || null, Number(m.stock||0), Number(m.stockR||0)]
-      );
+      let params = [m.date, m.type, m.designation_id || null, Number(m.quantite||0), Number(m.prix||0), m.client_id || null, Number(m.stock||0), Number(m.stockR||0), entGlobal, m.id, userId];
+      let updated = false;
+      try {
+        const [res] = await lconn.query(
+          'UPDATE stock_mouvements SET date = ?, type = ?, designation_id = ?, quantite = ?, prix = ?, client_id = ?, stock = ?, stockR = ?, global_id = ? WHERE id = ? AND user_id = ?',
+          params
+        );
+        updated = !!(res && (res.affectedRows > 0 || res.changes > 0));
+      } catch {
+        // Fallback sans global_id
+        params = [m.date, m.type, m.designation_id || null, Number(m.quantite||0), Number(m.prix||0), m.client_id || null, Number(m.stock||0), Number(m.stockR||0), m.id, userId];
+        const [res2] = await lconn.query(
+          'UPDATE stock_mouvements SET date = ?, type = ?, designation_id = ?, quantite = ?, prix = ?, client_id = ?, stock = ?, stockR = ? WHERE id = ? AND user_id = ?',
+          params
+        );
+        updated = !!(res2 && (res2.affectedRows > 0 || res2.changes > 0));
+      }
+      if (!updated) {
+        try {
+          await lconn.query(
+            'INSERT INTO stock_mouvements (id, user_id, date, type, designation_id, quantite, prix, client_id, stock, stockR, global_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [m.id, userId, m.date, m.type, m.designation_id || null, Number(m.quantite||0), Number(m.prix||0), m.client_id || null, Number(m.stock||0), Number(m.stockR||0), entGlobal]
+          );
+        } catch (_) {
+          await lconn.query(
+            'UPDATE stock_mouvements SET date = ?, type = ?, designation_id = ?, quantite = ?, prix = ?, client_id = ?, stock = ?, stockR = ? WHERE id = ? AND user_id = ?',
+            params
+          );
+        }
+      }
     }
     await lconn.commit();
     return rows.length;
@@ -685,9 +783,17 @@ async function pullPaiementsFromRemote(userId, lconn, rconn) {
   const [rows] = await queryWithTimeout(rconn, `SELECT id, mouvement_id, user_id, montant, DATE_FORMAT(date,'%Y-%m-%d') as date FROM stock_paiements WHERE (user_id = ? OR user_id IS NULL) ORDER BY id ASC`, [userId], 20000);
   await lconn.beginTransaction();
   try {
-    await lconn.query('DELETE FROM stock_paiements WHERE user_id = ? OR user_id IS NULL', [userId]);
     for (const p of rows) {
-      await lconn.query('INSERT INTO stock_paiements (id, mouvement_id, user_id, montant, date) VALUES (?, ?, ?, ?, ?)', [p.id, p.mouvement_id, p.user_id || null, Number(p.montant||0), p.date]);
+      const params = [p.mouvement_id, p.user_id || null, Number(p.montant||0), p.date, p.id];
+      const [res] = await lconn.query('UPDATE stock_paiements SET mouvement_id = ?, user_id = ?, montant = ?, date = ? WHERE id = ?', params);
+      const updated = (res && (res.affectedRows > 0 || res.changes > 0));
+      if (!updated) {
+        try {
+          await lconn.query('INSERT INTO stock_paiements (id, mouvement_id, user_id, montant, date) VALUES (?, ?, ?, ?, ?)', [p.id, p.mouvement_id, p.user_id || null, Number(p.montant||0), p.date]);
+        } catch (_) {
+          await lconn.query('UPDATE stock_paiements SET mouvement_id = ?, user_id = ?, montant = ?, date = ? WHERE id = ?', params);
+        }
+      }
     }
     await lconn.commit();
     return rows.length;
@@ -698,9 +804,17 @@ async function pullDepensesFromRemote(userId, lconn, rconn) {
   const [rows] = await queryWithTimeout(rconn, `SELECT id, user_id, DATE_FORMAT(date,'%Y-%m-%d') as date, libelle, montant, destinataire FROM stock_depenses WHERE user_id = ? ORDER BY id ASC`, [userId], 20000);
   await lconn.beginTransaction();
   try {
-    await lconn.query('DELETE FROM stock_depenses WHERE user_id = ?', [userId]);
     for (const d of rows) {
-      await lconn.query('INSERT INTO stock_depenses (id, user_id, date, libelle, montant, destinataire) VALUES (?, ?, ?, ?, ?, ?)', [d.id, userId, d.date, d.libelle, Number(d.montant||0), d.destinataire || null]);
+      const params = [d.date, d.libelle, Number(d.montant||0), d.destinataire || null, d.id, userId];
+      const [res] = await lconn.query('UPDATE stock_depenses SET date = ?, libelle = ?, montant = ?, destinataire = ? WHERE id = ? AND user_id = ?', params);
+      const updated = (res && (res.affectedRows > 0 || res.changes > 0));
+      if (!updated) {
+        try {
+          await lconn.query('INSERT INTO stock_depenses (id, user_id, date, libelle, montant, destinataire) VALUES (?, ?, ?, ?, ?, ?)', [d.id, userId, d.date, d.libelle, Number(d.montant||0), d.destinataire || null]);
+        } catch (_) {
+          await lconn.query('UPDATE stock_depenses SET date = ?, libelle = ?, montant = ?, destinataire = ? WHERE id = ? AND user_id = ?', params);
+        }
+      }
     }
     await lconn.commit();
     return rows.length;
@@ -835,16 +949,50 @@ router.get('/pull-general/progress', authenticateToken, async (req, res) => {
       } catch (e) { await l.rollback(); throw e; }
     }
 
+    async function countLocal(l, sql, params = []) {
+      const [[row]] = await l.query(sql, params);
+      return Number(row && (row.c || row.count) || 0);
+    }
     const steps = [
       { key: 'users', label: 'Utilisateurs', fn: async (l, r) => ({ pulled: await pullUsersAll(l, r) }) },
       { key: 'profiles', label: 'Profils', fn: async (l, r) => ({ pulled: await pullProfilesAll(l, r) }) },
       { key: 'subscriptions', label: 'Abonnements (paiements)', fn: async (l, r) => ({ pulled: await pullSubscriptionsPaymentsAll(l, r) }) },
-      { key: 'categories', label: 'Catégories', fn: async (l, r) => ({ pulled: await pullCategoriesFromRemote(l, r) }) },
-      { key: 'clients', label: 'Clients', fn: async (l, r) => ({ pulled: await pullClientsFromRemote(userId, l, r) }) },
-      { key: 'designations', label: 'Produits', fn: async (l, r) => ({ pulled: await pullDesignationsFromRemote(userId, l, r) }) },
-      { key: 'mouvements', label: 'Mouvements', fn: async (l, r) => ({ pulled: await pullMouvementsFromRemote(userId, l, r) }) },
-      { key: 'paiements', label: 'Paiements', fn: async (l, r) => ({ pulled: await pullPaiementsFromRemote(userId, l, r) }) },
-      { key: 'depenses', label: 'Dépenses', fn: async (l, r) => ({ pulled: await pullDepensesFromRemote(userId, l, r) }) },
+      { key: 'categories', label: 'Catégories', fn: async (l, r) => {
+          const before = await countLocal(l, 'SELECT COUNT(*) c FROM stock_categories');
+          const pulled = await pullCategoriesFromRemote(l, r);
+          const after = await countLocal(l, 'SELECT COUNT(*) c FROM stock_categories');
+          return { pulled, localBefore: before, localAfter: after };
+        } },
+      { key: 'clients', label: 'Clients', fn: async (l, r) => {
+          const before = await countLocal(l, 'SELECT COUNT(*) c FROM stock_clients WHERE user_id = ?', [userId]);
+          const pulled = await pullClientsFromRemote(userId, l, r);
+          const after = await countLocal(l, 'SELECT COUNT(*) c FROM stock_clients WHERE user_id = ?', [userId]);
+          return { pulled, localBefore: before, localAfter: after };
+        } },
+      { key: 'designations', label: 'Produits', fn: async (l, r) => {
+          const before = await countLocal(l, 'SELECT COUNT(*) c FROM stock_designations WHERE user_id = ?', [userId]);
+          const pulled = await pullDesignationsFromRemote(userId, l, r);
+          const after = await countLocal(l, 'SELECT COUNT(*) c FROM stock_designations WHERE user_id = ?', [userId]);
+          return { pulled, localBefore: before, localAfter: after };
+        } },
+      { key: 'mouvements', label: 'Mouvements', fn: async (l, r) => {
+          const before = await countLocal(l, 'SELECT COUNT(*) c FROM stock_mouvements WHERE user_id = ?', [userId]);
+          const pulled = await pullMouvementsFromRemote(userId, l, r);
+          const after = await countLocal(l, 'SELECT COUNT(*) c FROM stock_mouvements WHERE user_id = ?', [userId]);
+          return { pulled, localBefore: before, localAfter: after };
+        } },
+      { key: 'paiements', label: 'Paiements', fn: async (l, r) => {
+          const before = await countLocal(l, 'SELECT COUNT(*) c FROM stock_paiements WHERE (user_id = ? OR user_id IS NULL)', [userId]);
+          const pulled = await pullPaiementsFromRemote(userId, l, r);
+          const after = await countLocal(l, 'SELECT COUNT(*) c FROM stock_paiements WHERE (user_id = ? OR user_id IS NULL)', [userId]);
+          return { pulled, localBefore: before, localAfter: after };
+        } },
+      { key: 'depenses', label: 'Dépenses', fn: async (l, r) => {
+          const before = await countLocal(l, 'SELECT COUNT(*) c FROM stock_depenses WHERE user_id = ?', [userId]);
+          const pulled = await pullDepensesFromRemote(userId, l, r);
+          const after = await countLocal(l, 'SELECT COUNT(*) c FROM stock_depenses WHERE user_id = ?', [userId]);
+          return { pulled, localBefore: before, localAfter: after };
+        } },
     ];
 
     send('start', { user: userId, steps: steps.map(s => s.key) });
@@ -1003,13 +1151,47 @@ router.get('/push/progress', authenticateToken, async (req, res) => {
     let closed = false;
     req.on('close', () => { closed = true; });
 
+    async function countRemote(r, sql, params = []) {
+      const [[row]] = await r.query(sql, params);
+      return Number(row && (row.c || row.count) || 0);
+    }
     const steps = [
-      { key: 'categories', label: 'Catégories', fn: async (r) => ({ sent: await pushCategories(r) }) },
-      { key: 'clients', label: 'Clients', fn: async (r) => ({ sent: await pushClients(userId, r) }) },
-      { key: 'designations', label: 'Produits', fn: async (r) => ({ sent: await pushDesignations(userId, r) }) },
-      { key: 'mouvements', label: 'Mouvements', fn: async (r) => ({ sent: await pushMouvements(userId, r) }) },
-      { key: 'paiements', label: 'Paiements', fn: async (r) => ({ sent: await pushPaiements(userId, r) }) },
-      { key: 'depenses', label: 'Dépenses', fn: async (r) => ({ sent: await pushDepenses(userId, r) }) },
+      { key: 'categories', label: 'Catégories', fn: async (r) => {
+          const before = await countRemote(r, 'SELECT COUNT(*) c FROM stock_categories');
+          const sent = await pushCategories(r);
+          const after = await countRemote(r, 'SELECT COUNT(*) c FROM stock_categories');
+          return { sent, remoteBefore: before, remoteAfter: after };
+        } },
+      { key: 'clients', label: 'Clients', fn: async (r) => {
+          const before = await countRemote(r, 'SELECT COUNT(*) c FROM stock_clients WHERE user_id = ?', [userId]);
+          const sent = await pushClients(userId, r);
+          const after = await countRemote(r, 'SELECT COUNT(*) c FROM stock_clients WHERE user_id = ?', [userId]);
+          return { sent, remoteBefore: before, remoteAfter: after };
+        } },
+      { key: 'designations', label: 'Produits', fn: async (r) => {
+          const before = await countRemote(r, 'SELECT COUNT(*) c FROM stock_designations WHERE user_id = ?', [userId]);
+          const sent = await pushDesignations(userId, r);
+          const after = await countRemote(r, 'SELECT COUNT(*) c FROM stock_designations WHERE user_id = ?', [userId]);
+          return { sent, remoteBefore: before, remoteAfter: after };
+        } },
+      { key: 'mouvements', label: 'Mouvements', fn: async (r) => {
+          const before = await countRemote(r, 'SELECT COUNT(*) c FROM stock_mouvements WHERE user_id = ?', [userId]);
+          const sent = await pushMouvements(userId, r);
+          const after = await countRemote(r, 'SELECT COUNT(*) c FROM stock_mouvements WHERE user_id = ?', [userId]);
+          return { sent, remoteBefore: before, remoteAfter: after };
+        } },
+      { key: 'paiements', label: 'Paiements', fn: async (r) => {
+          const before = await countRemote(r, 'SELECT COUNT(*) c FROM stock_paiements WHERE (user_id = ? OR user_id IS NULL)', [userId]);
+          const sent = await pushPaiements(userId, r);
+          const after = await countRemote(r, 'SELECT COUNT(*) c FROM stock_paiements WHERE (user_id = ? OR user_id IS NULL)', [userId]);
+          return { sent, remoteBefore: before, remoteAfter: after };
+        } },
+      { key: 'depenses', label: 'Dépenses', fn: async (r) => {
+          const before = await countRemote(r, 'SELECT COUNT(*) c FROM stock_depenses WHERE user_id = ?', [userId]);
+          const sent = await pushDepenses(userId, r);
+          const after = await countRemote(r, 'SELECT COUNT(*) c FROM stock_depenses WHERE user_id = ?', [userId]);
+          return { sent, remoteBefore: before, remoteAfter: after };
+        } },
     ];
 
     send('start', { user: userId, steps: steps.map(s => s.key) });
