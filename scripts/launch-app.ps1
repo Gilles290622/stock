@@ -43,8 +43,8 @@ if (-not $up) {
   if (Test-Path $loader) {
     $fileUrl = 'file:///' + ($loader -replace '\\','/')
     $qs = '?target=' + [Uri]::EscapeDataString($Url)
-    if (Test-Path $chrome) { Start-Process -WindowStyle Hidden -FilePath $chrome -ArgumentList ("--app=" + $fileUrl + $qs) | Out-Null }
-    elseif (Test-Path $edge) { Start-Process -WindowStyle Hidden -FilePath $edge -ArgumentList ("--app=" + $fileUrl + $qs) | Out-Null }
+    if (Test-Path $chrome) { Start-Process -FilePath $chrome -ArgumentList ("--app=" + $fileUrl + $qs) | Out-Null }
+    elseif (Test-Path $edge) { Start-Process -FilePath $edge -ArgumentList ("--app=" + $fileUrl + $qs) | Out-Null }
     else { Start-Process ($fileUrl + $qs) | Out-Null }
     return
   }
@@ -59,9 +59,9 @@ if (-not $up) {
 
 # 3) Ouvre l'appli en mode application (Chrome/Edge)
 if (Test-Path $chrome) {
-  Start-Process -WindowStyle Hidden -FilePath $chrome -ArgumentList ("--app=" + $Url) | Out-Null
+  Start-Process -FilePath $chrome -ArgumentList ("--app=" + $Url) | Out-Null
 } elseif (Test-Path $edge) {
-  Start-Process -WindowStyle Hidden -FilePath $edge -ArgumentList ("--app=" + $Url) | Out-Null
+  Start-Process -FilePath $edge -ArgumentList ("--app=" + $Url) | Out-Null
 } else {
   Start-Process $Url | Out-Null
 }
