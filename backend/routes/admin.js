@@ -323,6 +323,47 @@ router.post('/install-pack/publish', authenticateToken, requireAdmin, async (req
     if (!fs.existsSync(zipPath)) return res.status(500).json({ error: 'Zip non trouvé après construction' });
     const stat = fs.statSync(zipPath);
 
+    // 1.b) Validation du mot de passe ZIP via 7-Zip (test d'intégrité)
+    // Empêche l'upload d'une archive corrompue ou chiffrée avec un mot de passe différent.
+    try {
+      // Chercher 7z.exe (PATH ou emplacement standard)
+      const sevenCandidates = [
+        '7z',
+        path.join(process.env['ProgramFiles'] || 'C:/Program Files', '7-Zip', '7z.exe'),
+        path.join(process.env['ProgramFiles(x86)'] || 'C:/Program Files (x86)', '7-Zip', '7z.exe')
+      ];
+      let seven = null;
+      for (const c of sevenCandidates) {
+        try {
+          // Pour '7z' nu, laisser spawn faire la résolution PATH
+          if (c === '7z') {
+            seven = '7z';
+            break;
+          } else if (fs.existsSync(c)) { seven = c; break; }
+        } catch (_) {}
+      }
+      if (!seven) throw new Error('7-Zip introuvable pour validation (installer 7-Zip)');
+
+      const testArgs = ['t', `-p${zipPassword}`, zipPath];
+      const testResult = await new Promise((resolve, reject) => {
+        const proc = spawn(seven, testArgs, { windowsHide: true });
+        let out = '', err = '';
+        proc.stdout.on('data', d => { out += d.toString(); });
+        proc.stderr.on('data', d => { err += d.toString(); });
+        proc.on('error', reject);
+        proc.on('close', code => {
+          resolve({ code, out, err });
+        });
+      });
+      if (testResult.code !== 0 || /Wrong password|Can not open encrypted archive/i.test(testResult.out + testResult.err)) {
+        console.error('[install-pack/publish] zip password validation failed:', testResult.code, testResult.err || testResult.out);
+        return res.status(500).json({ error: 'Validation mot de passe ZIP échouée (mot de passe incorrect ou archive corrompue).' });
+      }
+    } catch (ve) {
+      console.error('[install-pack/publish] zip validation error:', ve?.message || ve);
+      return res.status(500).json({ error: 'Impossible de valider l\'archive (7-Zip manquant ou erreur). ' + (ve?.message || '') });
+    }
+
     // 2) Upload to PHP API as raw body
     const targetUrl = new URL(`${apiBase}/resources/upload-raw?filename=${encodeURIComponent(outName)}&key=${encodeURIComponent(uploadKey)}`);
     const mod = targetUrl.protocol === 'https:' ? https : http;
