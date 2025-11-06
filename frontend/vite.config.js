@@ -1,10 +1,23 @@
 import { defineConfig } from 'vite'
+import { fileURLToPath } from 'node:url'
+import path from 'node:path'
 import react from '@vitejs/plugin-react'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+// DOMPurify est installé au niveau du workspace racine; pointer vers ce chemin
+// Utiliser le build UMD (purify.js) qui est présent dans cette version
+const dompurifyEsm = path.resolve(__dirname, '../node_modules/dompurify/dist/purify.js')
 
 export default defineConfig(({ mode }) => ({
   // Base sous-dossier: application accessible via https://domaine/stock/
   base: '/stock/',
   plugins: [react()],
+  resolve: {
+    alias: {
+      // Forcer l'utilisation du build ESM de DOMPurify pour Vite/Rollup (chemin absolu pour contourner exports)
+      dompurify: dompurifyEsm,
+    },
+  },
   // Transform index.html to inject the correct BASE_URL for favicon/logo links
   // Vite automatically injects %BASE_URL% = base, but we keep it explicit
   // so links like %BASE_URL%favicon.png resolve to /stock/favicon.png in prod.

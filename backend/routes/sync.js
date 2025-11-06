@@ -802,17 +802,26 @@ async function pullPaiementsFromRemote(userId, lconn, rconn) {
 
 async function pullDepensesFromRemote(userId, lconn, rconn) {
   const [rows] = await queryWithTimeout(rconn, `SELECT id, user_id, DATE_FORMAT(date,'%Y-%m-%d') as date, libelle, montant, destinataire FROM stock_depenses WHERE user_id = ? ORDER BY id ASC`, [userId], 20000);
+
+  // Récupérer le global_id d'entreprise pour scoper les données importées
+  let entGlobal = null;
+  try {
+    const [[ctx]] = await lconn.query(`SELECT e.global_code AS entGlobal FROM users u LEFT JOIN stock_entreprise e ON e.id = u.entreprise_id WHERE u.id = ?`, [userId]);
+    entGlobal = ctx ? ctx.entGlobal : null;
+  } catch (_) { entGlobal = null; }
+
   await lconn.beginTransaction();
   try {
     for (const d of rows) {
-      const params = [d.date, d.libelle, Number(d.montant||0), d.destinataire || null, d.id, userId];
-      const [res] = await lconn.query('UPDATE stock_depenses SET date = ?, libelle = ?, montant = ?, destinataire = ? WHERE id = ? AND user_id = ?', params);
+      const params = [d.date, d.libelle, Number(d.montant||0), d.destinataire || null, entGlobal, d.id, userId];
+      // Mettre à jour y compris le global_id pour garantir l'affichage côté flux (scoping par entreprise)
+      const [res] = await lconn.query('UPDATE stock_depenses SET date = ?, libelle = ?, montant = ?, destinataire = ?, global_id = ? WHERE id = ? AND user_id = ?', params);
       const updated = (res && (res.affectedRows > 0 || res.changes > 0));
       if (!updated) {
         try {
-          await lconn.query('INSERT INTO stock_depenses (id, user_id, date, libelle, montant, destinataire) VALUES (?, ?, ?, ?, ?, ?)', [d.id, userId, d.date, d.libelle, Number(d.montant||0), d.destinataire || null]);
+          await lconn.query('INSERT INTO stock_depenses (id, user_id, date, libelle, montant, destinataire, global_id) VALUES (?, ?, ?, ?, ?, ?, ?)', [d.id, userId, d.date, d.libelle, Number(d.montant||0), d.destinataire || null, entGlobal]);
         } catch (_) {
-          await lconn.query('UPDATE stock_depenses SET date = ?, libelle = ?, montant = ?, destinataire = ? WHERE id = ? AND user_id = ?', params);
+          await lconn.query('UPDATE stock_depenses SET date = ?, libelle = ?, montant = ?, destinataire = ?, global_id = ? WHERE id = ? AND user_id = ?', params);
         }
       }
     }

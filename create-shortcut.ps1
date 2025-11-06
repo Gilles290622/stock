@@ -9,10 +9,11 @@ $ErrorActionPreference = 'Stop'
 $desktop = [Environment]::GetFolderPath('Desktop')
 $shortcutPath = Join-Path $desktop ("$Name" + '.lnk')
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
-## Icône: privilégier jtservices.ico si présent, sinon favicon.ico, sinon jtservices.jpg
+## Icône: privilégier jtservices.ico (icône officielle), puis favicon.ico, puis images
 $iconCandidates = @(
 	(Join-Path $scriptRoot 'frontend\public\jtservices.ico'),
 	(Join-Path $scriptRoot 'frontend\public\favicon.ico'),
+	(Join-Path $scriptRoot 'frontend\public\jtservices.png'),
 	(Join-Path $scriptRoot 'frontend\public\jtservices.jpg')
 )
 $iconPath = $iconCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1

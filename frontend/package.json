@@ -17,6 +17,7 @@
     "@tailwindcss/vite": "^4.1.12",
     "axios": "^1.11.0",
     "cors": "^2.8.5",
+    "dompurify": "^3.3.0",
     "express": "^5.1.0",
     "joi": "^18.0.1",
     "jspdf": "^3.0.2",
@@ -37,6 +38,7 @@
     "eslint-plugin-react-hooks": "^5.2.0",
     "eslint-plugin-react-refresh": "^0.4.20",
     "globals": "^16.3.0",
+    "lightningcss": "^1.30.2",
     "postcss": "^8.5.6",
     "tailwindcss": "^4.1.12",
     "vite": "^7.1.2"

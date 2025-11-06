@@ -109,6 +109,16 @@ async function ensureRemoteProfilesSchema(conn) {
          CONSTRAINT fk_profiles_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
     );
+    // Ensure colonne 'entreprise' existe aussi sur schéma déjà créé
+    try {
+      const [cols] = await conn.query("SHOW COLUMNS FROM profiles LIKE 'entreprise'");
+      if (!Array.isArray(cols) || cols.length === 0) {
+        await conn.execute("ALTER TABLE profiles ADD COLUMN entreprise VARCHAR(255) NULL AFTER status");
+      }
+    } catch (e) {
+      // Ignore if lack of privileges or other benign errors
+      if (!/Duplicate column|exists/i.test(e && (e.message || ''))) console.warn('[profiles] ALTER ADD entreprise ignoré:', e && (e.message || e));
+    }
   } catch (e) {
     console.warn('[remote] CREATE TABLE profiles ignoré:', e && (e.message || e));
   }
@@ -118,9 +128,11 @@ async function pushUsersAll() {
   // Synchronise tous les utilisateurs + profils (username/role/status/entreprise)
   const [loc] = await pool.query(
     `SELECT u.id, u.full_name, u.email, u.password,
-            p.username, p.role, p.status, NULL as entreprise
+            p.username, p.role, p.status,
+            COALESCE(e.name, u.entreprise) AS entreprise
        FROM users u
   LEFT JOIN profiles p ON p.user_id = u.id
+  LEFT JOIN stock_entreprise e ON e.id = u.entreprise_id
       ORDER BY u.id ASC`
   );
   // Note: entreprise côté local peut être dans users selon migrations; si présent, mapper ici.
@@ -128,6 +140,12 @@ async function pushUsersAll() {
     const conn = await remotePool.getConnection();
     try {
       await ensureRemoteProfilesSchema(conn);
+      // Detect presence of entreprise column to adapt upsert
+      let hasEntrepriseCol = true;
+      try {
+        const [cols] = await conn.query("SHOW COLUMNS FROM profiles LIKE 'entreprise'");
+        hasEntrepriseCol = Array.isArray(cols) && cols.length > 0;
+      } catch (_) { hasEntrepriseCol = false; }
       await conn.beginTransaction();
       for (const u of loc) {
         await conn.execute(
@@ -137,12 +155,36 @@ async function pushUsersAll() {
           [u.id, u.full_name || '', u.email || `user${u.id}@local`, u.password || '']
         );
         // Upsert profil
-        await conn.execute(
-          `INSERT INTO profiles (user_id, username, role, status, entreprise)
-           VALUES (?, ?, ?, ?, ?)
-           ON DUPLICATE KEY UPDATE username=VALUES(username), role=VALUES(role), status=VALUES(status), entreprise=VALUES(entreprise)`,
-          [u.id, u.username || null, u.role || 'user', u.status || 'active', u.entreprise || null]
-        );
+        if (hasEntrepriseCol) {
+          try {
+            await conn.execute(
+              `INSERT INTO profiles (user_id, username, role, status, entreprise)
+               VALUES (?, ?, ?, ?, ?)
+               ON DUPLICATE KEY UPDATE username=VALUES(username), role=VALUES(role), status=VALUES(status), entreprise=VALUES(entreprise)`,
+              [u.id, u.username || null, u.role || 'user', u.status || 'active', u.entreprise || null]
+            );
+          } catch (e) {
+            // If entreprise column is actually missing, fallback dynamically
+            if (/Unknown column 'entreprise'|ER_BAD_FIELD_ERROR/i.test(String(e && (e.message || e)))) {
+              try { await conn.execute("ALTER TABLE profiles ADD COLUMN entreprise VARCHAR(255) NULL AFTER status"); hasEntrepriseCol = true; } catch (_) {}
+              await conn.execute(
+                `INSERT INTO profiles (user_id, username, role, status)
+                 VALUES (?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE username=VALUES(username), role=VALUES(role), status=VALUES(status)`,
+                [u.id, u.username || null, u.role || 'user', u.status || 'active']
+              );
+            } else {
+              throw e;
+            }
+          }
+        } else {
+          await conn.execute(
+            `INSERT INTO profiles (user_id, username, role, status)
+             VALUES (?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE username=VALUES(username), role=VALUES(role), status=VALUES(status)`,
+            [u.id, u.username || null, u.role || 'user', u.status || 'active']
+          );
+        }
       }
       await conn.commit();
     } catch (e) {

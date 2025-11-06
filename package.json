@@ -1,7 +1,10 @@
 {
   "name": "stock-root",
   "private": true,
-  "workspaces": ["backend", "frontend"],
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
   "scripts": {
     "build": "npm --workspace frontend run build",
     "start:backend": "npm --workspace backend start || node backend/server.js",
@@ -10,9 +13,12 @@
     "pm2:restart": "pm2 restart stock-backend",
     "pm2:logs": "pm2 logs stock-backend --lines 200",
     "make:favicon": "node scripts/make-favicon-ico.js",
+    "make:blue-ico": "node scripts/make-blue-ico.js",
     "prune:scripts": "node scripts/prune-dev-scripts.js"
   },
   "devDependencies": {
+    "caniuse-lite": "^1.0.30001753",
+    "lightningcss": "^1.30.2",
     "sharp": "^0.33.5",
     "to-ico": "^1.1.5"
   }

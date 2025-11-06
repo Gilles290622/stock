@@ -250,6 +250,19 @@ const fetchFeed = async (value) => {
     setTimeout(() => fetchCounts(), 0);
   }, []);
 
+  // Rafraîchir intelligemment selon le contexte de recherche
+  const refreshFeedSmart = async () => {
+    const q = String(searchQuery || '').trim();
+    if (q) { await fetchFeed(q); } else { await fetchMouvementsDuJour(); }
+  };
+
+  // Écouteur global: après import/sync, rafraîchir le flux
+  useEffect(() => {
+    const handler = () => { refreshFeedSmart(); };
+    window.addEventListener('app:data-updated', handler);
+    return () => window.removeEventListener('app:data-updated', handler);
+  }, [searchQuery]);
+
   // Dériver la liste des mouvements (utile pour options, modales, etc.)
   const mouvements = useMemo(() => feed.filter((f) => f.kind === "mouvement"), [feed]);
 
@@ -1010,7 +1023,13 @@ const saveEdit = async (e) => {
       <EditMouvementModal open={editOpen} onClose={closeEdit} onSubmit={saveEdit} loading={editLoading} error={editError} form={editForm} setForm={setEditForm} designationOptions={designationOptions} clientOptions={clientOptions} />
       <ProductHistoryModal open={historyOpen} onClose={() => setHistoryOpen(false)} designation={historyDesignation} token={token} company={COMPANY} seedLines={mouvements} />
       <ClientHistoryModal open={clientHistoryOpen} onClose={() => setClientHistoryOpen(false)} entity={clientHistoryEntity} mode={clientHistoryMode} token={token} seedLines={mouvements} />
-      <PaymentModal open={payOpen} onClose={() => setPayOpen(false)} mouvement={payContext} token={token} />
+      <PaymentModal
+        open={payOpen}
+        onClose={() => setPayOpen(false)}
+        mouvement={payContext}
+        token={token}
+        onUpdated={() => { refreshFeedSmart(); /* notifier aussi globalement */ try { window.dispatchEvent(new CustomEvent('app:data-updated', { detail: { source: 'paiement' } })); } catch {} }}
+      />
       <InvoiceModal
         open={invoiceOpen}
         onClose={() => setInvoiceOpen(false)}
@@ -1034,6 +1053,10 @@ const saveEdit = async (e) => {
         onCreated={(dep) => {
           // Optionnel: afficher une notification, rafraîchir une liste de dépenses ailleurs, etc.
           console.log('Dépense créée', dep);
+          // rafraîchir le flux principal
+          refreshFeedSmart();
+          // émettre un événement global (si d'autres vues veulent réagir)
+          try { window.dispatchEvent(new CustomEvent('app:data-updated', { detail: { source: 'depense' } })); } catch {}
         }}
       />
 

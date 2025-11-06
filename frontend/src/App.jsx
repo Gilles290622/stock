@@ -42,7 +42,11 @@ function AppContent() {
 
   useEffect(() => {
     const token = localStorage.getItem("token");
-    if (!token) return;
+    if (!token) {
+      // Aucun token -> aller directement au login
+      try { navigate('/login', { replace: true }); } catch {}
+      return;
+    }
     // D'abord décoder token pour id minimal
     setUser(getUserFromToken(token));
     // Puis récupérer profil complet (logo inclus)
@@ -62,7 +66,14 @@ function AppContent() {
           }));
         }
       } catch (e) {
-        // silencieux, on laisse le token deco si 401
+        // Si 401, invalider la session locale et rediriger vers /login
+        const status = e?.response?.status;
+        if (status === 401) {
+          try { localStorage.removeItem('token'); } catch {}
+          try { localStorage.removeItem('user_logo'); } catch {}
+          setUser(null);
+          try { navigate('/login', { replace: true }); } catch {}
+        }
       }
     })();
   }, []);
@@ -173,6 +184,7 @@ function AppContent() {
         userId={user?.id}
         role={user?.role}
         entreprise={user?.entreprise}
+        onEntrepriseChange={(ent) => setUser(prev => ({ ...(prev||{}), entreprise: ent }))}
       />
       {showUpdateBanner && (
         <div className="border-b border-amber-300 bg-amber-50 text-amber-900 text-sm">

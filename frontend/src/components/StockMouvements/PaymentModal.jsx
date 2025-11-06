@@ -3,7 +3,7 @@ import api from "../../api/axios";
 import { capFrFirstLowerRest, formatInt, frToIso, getTodayFr } from "../../utils/format";
 import { normalizeType } from "../../utils/valuation";
 
-const PaymentModal = ({ open, onClose, mouvement, token }) => {
+const PaymentModal = ({ open, onClose, mouvement, token, onUpdated }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [list, setList] = useState([]);
@@ -96,6 +96,8 @@ const PaymentModal = ({ open, onClose, mouvement, token }) => {
       }, { headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" } });
 
       await refreshListAndRemainder();
+      // notifier le parent pour rafraîchir le flux global
+      try { onUpdated && onUpdated('payment:created'); } catch {}
       setError("");
     } catch (err) {
       setError(err?.response?.data?.error || "Enregistrement du paiement impossible.");
@@ -128,6 +130,8 @@ const PaymentModal = ({ open, onClose, mouvement, token }) => {
       });
 
       await refreshListAndRemainder();
+      // notifier le parent pour rafraîchir le flux global
+      try { onUpdated && onUpdated('payment:updated'); } catch {}
       cancelEdit();
       setError("");
     } catch (err) {
@@ -146,6 +150,8 @@ const PaymentModal = ({ open, onClose, mouvement, token }) => {
       await api.delete(`/api/stockPaiements/${id}`, { headers: { Authorization: `Bearer ${token}` } });
 
       await refreshListAndRemainder();
+      // notifier le parent pour rafraîchir le flux global
+      try { onUpdated && onUpdated('payment:deleted'); } catch {}
       setError("");
     } catch (err) {
       setError(err?.response?.data?.error || "Suppression du paiement impossible.");

@@ -5,11 +5,12 @@ param(
 $ErrorActionPreference = 'SilentlyContinue'
 function Test-Health($u){ try { $r = Invoke-WebRequest -Uri "$u/api/health" -UseBasicParsing -TimeoutSec 3; return $r.StatusCode -eq 200 } catch { return $false } }
 
-$repo = Split-Path -Parent $MyInvocation.MyCommand.Definition
-Set-Location $repo
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+$root = Split-Path -Parent $scriptDir
+Set-Location $root
 
 # Assurer la configuration du port 80 (si exécutable avec élévation)
-$cfg80 = Join-Path $repo 'scripts\configure-port80.ps1'
+$cfg80 = Join-Path $root 'scripts\configure-port80.ps1'
 if (Test-Path $cfg80) {
   try { Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$cfg80) -WindowStyle Hidden | Out-Null } catch {}
 }
@@ -26,12 +27,12 @@ foreach ($base in @('http://127.0.0.1','http://127.0.0.1:3001')) { if (Test-Heal
 
 # 2) Si non, lance via start-pm2.ps1 en arrière-plan et ouvre un loader local immédiatement
 if (-not $up) {
-  $starter = Join-Path $repo 'scripts\start-pm2.ps1'
+  $starter = Join-Path $root 'scripts\start-pm2.ps1'
   if (Test-Path $starter) {
     Start-Process -WindowStyle Hidden -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File', $starter) | Out-Null
   } else {
     # Fallback: node backend/server.js (fenêtre cachée)
-    $backend = Join-Path $repo 'backend'
+  $backend = Join-Path $root 'backend'
     if (Test-Path (Join-Path $backend 'server.js')) {
       $cmd = 'cd "'+$backend+'"; $env:PORT="80"; $env:NODE_ENV="production"; $env:DB_DRIVER="sqlite"; $env:SQLITE_FILE="data/app.sqlite"; $env:DISABLE_REMOTE_REPLICATION="true"; node server.js'
       Start-Process -WindowStyle Hidden -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-WindowStyle','Hidden','-Command', $cmd) | Out-Null
@@ -39,7 +40,7 @@ if (-not $up) {
   }
 
   # Ouvre un écran de chargement local (loader.html) qui redirige vers $Url quand l'API est up
-  $loader = Join-Path $repo 'frontend\public\loader.html'
+  $loader = Join-Path $root 'frontend\public\loader.html'
   if (Test-Path $loader) {
     $fileUrl = 'file:///' + ($loader -replace '\\','/')
     $qs = '?target=' + [Uri]::EscapeDataString($Url)

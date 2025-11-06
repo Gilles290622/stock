@@ -17,6 +17,28 @@ export default function Header({ username, userLogo, userNumber, onLogout, showS
 
   useEffect(() => { setEntreprise(initialEntreprise || ''); }, [initialEntreprise]);
 
+  // En environnement online, certains anciens serveurs ne renvoient pas entreprise dans /api/me.
+  // Récupérer le nom d'entreprise via /api/entreprise quand il est manquant.
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchEnt() {
+      try {
+        if (!entreprise && (userId || username)) {
+          const { data } = await api.get('/api/entreprise');
+          if (!cancelled && data && typeof data.entreprise === 'string' && data.entreprise.trim() !== '') {
+            const ent = data.entreprise.trim();
+            setEntreprise(ent);
+            if (onEntrepriseChange) {
+              try { onEntrepriseChange(ent); } catch {}
+            }
+          }
+        }
+      } catch { /* tolérant */ }
+    }
+    fetchEnt();
+    return () => { cancelled = true; };
+  }, [entreprise, userId, username]);
+
   // Vérifier s'il y a des nouveautés côté distant (badge)
   useEffect(() => {
     let stop = false;
@@ -80,6 +102,8 @@ export default function Header({ username, userLogo, userNumber, onLogout, showS
           setSyncMsg('Synchronisation terminée avec avertissements');
         }
         setSyncing(false);
+        // notifier les vues (liste flux, etc.)
+        try { window.dispatchEvent(new CustomEvent('app:data-updated', { detail: { source: 'sync' } })); } catch {}
       }
     });
     // Optionnel: renvoyer le contrôleur pour annulation si nécessaire
@@ -104,6 +128,8 @@ export default function Header({ username, userLogo, userNumber, onLogout, showS
       onDone: (payload) => {
         setPullMsg(payload?.success ? `Import terminé${lastLabel ? ' - ' + lastLabel : ''}` : 'Import terminé avec avertissements');
         setPulling(false);
+        // notifier les vues (liste flux, etc.)
+        try { window.dispatchEvent(new CustomEvent('app:data-updated', { detail: { source: 'import' } })); } catch {}
       }
     });
     return ctrl;

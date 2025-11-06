@@ -12,9 +12,11 @@ param(
   [switch]$DryRun,
   [switch]$UploadApi,            # upload php-api/index.php
   [switch]$UploadApiConfig,      # upload php-api/config.php (attention: secrets)
+  [switch]$UploadResources,      # upload static resources from package_stock/public_html/stock/ressources
   [switch]$ExplicitTls,          # for explicit FTPS on port 21 with ftp:// + --ssl
   [switch]$Insecure,             # allow skipping TLS certificate validation
-  [string]$ApiConfigContent      # if provided, upload this content as stock/api/config.php
+  [string]$ApiConfigContent,     # if provided, upload this content as stock/api/config.php
+  [string]$ApiHtaccessContent    # if provided, upload this content as stock/api/.htaccess
 )
 
 $ErrorActionPreference = 'Stop'
@@ -36,6 +38,7 @@ $dist = Join-Path $repo 'frontend\dist'
 $rootHt = Join-Path $repo 'deploy\hostinger\root\.htaccess'
 $stockHt = Join-Path $repo 'deploy\hostinger\stock\.htaccess'
 $apiDir = Join-Path $repo 'deploy\hostinger\php-api'
+$resDir = Join-Path $repo 'deploy\hostinger\package_stock\public_html\stock\ressources'
 
 if ($Build) {
   Write-Host '[build] npm run build dans frontend...' -ForegroundColor Cyan
@@ -168,6 +171,26 @@ if ($ApiConfigContent) {
   Write-Warning 'Chargement direct du contenu de config.php vers le serveur (contient des secrets).'
   $remoteCfg = (Join-RemotePath $RemoteRoot 'stock/api' 'config.php')
   Send-RemoteText -text $ApiConfigContent -remotePath $remoteCfg
+}
+
+# 5b) Upload direct du contenu de .htaccess si fourni (pour variables d'env SetEnv)
+if ($ApiHtaccessContent) {
+  Write-Warning 'Chargement direct du contenu de stock/api/.htaccess vers le serveur (peut contenir des secrets).'
+  $remoteHt = (Join-RemotePath $RemoteRoot 'stock/api' '.htaccess')
+  Send-RemoteText -text $ApiHtaccessContent -remotePath $remoteHt
+}
+
+# 6) Ressources statiques (stock/ressources)
+if ($UploadResources) {
+  if (Test-Path $resDir) {
+    Get-ChildItem -LiteralPath $resDir -Recurse -File | ForEach-Object {
+      $rel = ($_.FullName.Substring($resDir.Length) -replace '^[\\/]+','')
+      $remote = (Join-RemotePath $RemoteRoot 'stock/ressources' $rel)
+      Send-RemoteFile -localFile $_.FullName -remotePath $remote
+    }
+  } else {
+    Write-Warning "Dossier ressources introuvable: $resDir"
+  }
 }
 
 Write-Host 'Terminé.' -ForegroundColor Green

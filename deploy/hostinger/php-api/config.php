@@ -11,5 +11,7 @@ return [
     'ssl'  => (getenv('REMOTE_DB_SSL') ?: 'true') === 'true',
   ],
   'jwt_secret' => getenv('JWT_SECRET') ?: 'change-me',
+  // Secret optionnel pour l'upload de ressources (si pas de JWT admin). Définir via env UPLOAD_SECRET.
+  'upload_secret' => getenv('UPLOAD_SECRET') ?: '',
   'app_version' => 'php-api-1.0.0'
 ];

@@ -3,6 +3,13 @@ const router = express.Router();
 const db = require('../config/db');
 const authenticateToken = require('../middleware/auth');
 const crypto = require('crypto');
+const remotePool = require('../config/remoteDb');
+const path = require('path');
+const fs = require('fs');
+const { spawn } = require('child_process');
+const https = require('https');
+const http = require('http');
+const { URL } = require('url');
 
 // Simple admin guard: role=admin in profiles
 async function requireAdmin(req, res, next) {
@@ -134,4 +141,228 @@ router.post('/users/:id/reset-password-init', authenticateToken, requireAdmin, a
     } catch (e) { /* noop */ }
     return res.json({ success: true, code, expires_at: iso, sent });
   } catch (e) { return res.status(500).json({ error: 'Erreur serveur' }); }
+});
+
+// DELETE /api/admin/users/:id — supprimer un utilisateur et ses données
+router.delete('/users/:id', authenticateToken, requireAdmin, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!id) return res.status(400).json({ error: 'ID invalide' });
+  try {
+    // Empêcher la suppression de soi-même
+    if (req.user && String(req.user.id) === String(id)) {
+      return res.status(400).json({ error: 'Impossible de supprimer votre propre compte' });
+    }
+    // Protéger les comptes admin
+    const [prows] = await db.execute('SELECT role FROM profiles WHERE user_id = ? LIMIT 1', [id]);
+    if (prows.length && prows[0].role === 'admin') {
+      return res.status(403).json({ error: 'Impossible de supprimer un compte administrateur' });
+    }
+
+    // Suppressions tolérantes (certaines tables peuvent ne pas exister en dev)
+    const tryExec = async (sql, params=[]) => {
+      try { await db.execute(sql, params); } catch (_e) { /* noop */ }
+    };
+
+    // 1) Paiements (références mouvements)
+    await tryExec('DELETE FROM stock_paiements WHERE user_id = ?', [id]);
+    // 2) Dépenses
+    await tryExec('DELETE FROM stock_depenses WHERE user_id = ?', [id]);
+    // 3) Mouvements
+    await tryExec('DELETE FROM stock_mouvements WHERE user_id = ?', [id]);
+    // 4) Clients & Désignations
+    await tryExec('DELETE FROM stock_clients WHERE user_id = ?', [id]);
+    await tryExec('DELETE FROM stock_designations WHERE user_id = ?', [id]);
+    // 5) Resets de mot de passe
+    await tryExec('DELETE FROM password_resets WHERE user_id = ?', [id]);
+    // 6) Profil
+    await tryExec('DELETE FROM profiles WHERE user_id = ?', [id]);
+    // 7) Utilisateur
+    await tryExec('DELETE FROM users WHERE id = ?', [id]);
+
+    // Tentative miroir sur la base distante si configurée (online depuis le local)
+    if (remotePool) {
+      let rconn;
+      try {
+        rconn = await remotePool.getConnection();
+        const rtry = async (sql, params=[]) => { try { await rconn.execute(sql, params); } catch (_) {} };
+        // Protéger les comptes admin distants
+        try {
+          const [rprows] = await rconn.execute('SELECT role FROM profiles WHERE user_id = ? LIMIT 1', [id]);
+          if (rprows.length && rprows[0].role === 'admin') {
+            // ne pas supprimer l'admin distant
+          } else {
+            await rtry('DELETE FROM stock_paiements WHERE user_id = ?', [id]);
+            await rtry('DELETE FROM stock_depenses WHERE user_id = ?', [id]);
+            await rtry('DELETE FROM stock_mouvements WHERE user_id = ?', [id]);
+            await rtry('DELETE FROM stock_clients WHERE user_id = ?', [id]);
+            await rtry('DELETE FROM stock_designations WHERE user_id = ?', [id]);
+            await rtry('DELETE FROM password_resets WHERE user_id = ?', [id]);
+            await rtry('DELETE FROM profiles WHERE user_id = ?', [id]);
+            await rtry('DELETE FROM users WHERE id = ?', [id]);
+          }
+        } catch (_) { /* ignore remote errors */ }
+      } catch (_) { /* remote unreachable: ignore */ }
+      finally { if (rconn) rconn.release(); }
+    }
+
+    res.json({ success: true, deleted_user_id: id });
+  } catch (e) {
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// POST /api/admin/reconcile-users — supprime en local les comptes absents en ligne (MySQL)
+// body: { dryRun?: boolean, mode?: 'delete' | 'deactivate' }
+router.post('/reconcile-users', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    if (!remotePool) return res.status(501).json({ error: 'Base distante non configurée (REMOTE_DB_*)' });
+    const dryRun = String(req.body?.dryRun || 'false').toLowerCase() === 'true';
+    const mode = (req.body?.mode === 'deactivate') ? 'deactivate' : 'delete';
+
+    // 1) Récupérer les IDs utilisateurs distants
+    let rconn;
+    let remoteIds = [];
+    try {
+      rconn = await remotePool.getConnection();
+      const [rows] = await rconn.query('SELECT id FROM users ORDER BY id ASC');
+      remoteIds = (rows || []).map(r => Number(r.id)).filter(n => Number.isInteger(n));
+    } finally { if (rconn) rconn.release(); }
+
+    // 2) Récupérer les IDs locaux
+    const [lrows] = await db.execute('SELECT id FROM users ORDER BY id ASC');
+    const localIds = (lrows || []).map(r => Number(r.id)).filter(n => Number.isInteger(n));
+
+    // 3) Déterminer ceux à supprimer en local = local - remote
+    const remoteSet = new Set(remoteIds);
+    let toDelete = localIds.filter(id => !remoteSet.has(id));
+
+    // Ne jamais supprimer soi-même ni les admins
+    const selfId = Number(req.user.id);
+    toDelete = toDelete.filter(id => id !== selfId);
+    // Filtrer les admins
+    if (toDelete.length) {
+      const placeholders = toDelete.map(() => '?').join(',');
+      try {
+        const [prows] = await db.execute(`SELECT user_id, role FROM profiles WHERE user_id IN (${placeholders})`, toDelete);
+        const adminSet = new Set((prows || []).filter(p => p.role === 'admin').map(p => Number(p.user_id)));
+        toDelete = toDelete.filter(id => !adminSet.has(id));
+      } catch (_) { /* ignore */ }
+    }
+
+    const result = { success: true, mode, dryRun, remoteCount: remoteIds.length, localCount: localIds.length, toDelete, deleted: [], deactivated: [], skipped: [] };
+    if (dryRun || toDelete.length === 0) {
+      return res.json(result);
+    }
+
+    // 4) Appliquer suppressions ou désactivation
+    const tryExec = async (sql, params=[]) => { try { await db.execute(sql, params); } catch (_e) { /* noop */ } };
+    for (const id of toDelete) {
+      if (mode === 'deactivate') {
+        try {
+          await db.execute('UPDATE profiles SET status = ? WHERE user_id = ?', ['revoked', id]);
+          result.deactivated.push(id);
+        } catch (_) { result.skipped.push(id); }
+        continue;
+      }
+      // Suppression en cascade (tolérante)
+      await tryExec('DELETE FROM stock_paiements WHERE user_id = ?', [id]);
+      await tryExec('DELETE FROM stock_depenses WHERE user_id = ?', [id]);
+      await tryExec('DELETE FROM stock_mouvements WHERE user_id = ?', [id]);
+      await tryExec('DELETE FROM stock_clients WHERE user_id = ?', [id]);
+      await tryExec('DELETE FROM stock_designations WHERE user_id = ?', [id]);
+      await tryExec('DELETE FROM password_resets WHERE user_id = ?', [id]);
+      await tryExec('DELETE FROM profiles WHERE user_id = ?', [id]);
+      await tryExec('DELETE FROM users WHERE id = ?', [id]);
+      result.deleted.push(id);
+    }
+
+    return res.json(result);
+  } catch (e) {
+    console.error('[reconcile-users] error:', e?.message || e);
+    return res.status(500).json({ error: 'Erreur serveur lors de la réconciliation' });
+  }
+});
+
+// POST /api/admin/install-pack/publish
+// Builds a password-protected payload zip and uploads it to Hostinger resources.
+// Env:
+//  - INSTALL_ZIP_PASSWORD: required password for 7z
+//  - HOSTINGER_UPLOAD_KEY: shared secret matching PHP config upload_secret
+//  - HOSTINGER_API_BASE: default https://jts-services.shop/stock/api
+router.post('/install-pack/publish', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const zipPassword = process.env.INSTALL_ZIP_PASSWORD || '';
+    const uploadKey = process.env.HOSTINGER_UPLOAD_KEY || '';
+    const apiBase = (process.env.HOSTINGER_API_BASE || 'https://jts-services.shop/stock/api').replace(/\/$/, '');
+    if (!zipPassword) return res.status(500).json({ error: 'INSTALL_ZIP_PASSWORD manquant' });
+    if (!uploadKey) return res.status(500).json({ error: 'HOSTINGER_UPLOAD_KEY manquant' });
+
+    // 1) Build zip via PowerShell script
+    const psFile = path.resolve(__dirname, '..', '..', 'scripts', 'make-payload-zip.ps1');
+    const ts = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const stamp = `${ts.getFullYear()}${pad(ts.getMonth()+1)}${pad(ts.getDate())}_${pad(ts.getHours())}${pad(ts.getMinutes())}`;
+    const outName = `stock_payload_${stamp}.zip`;
+    const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', psFile, '-Password', zipPassword, '-Out', outName];
+    const cwd = path.resolve(__dirname, '..', '..');
+
+    const runPs = () => new Promise((resolve, reject) => {
+      const proc = spawn('powershell', args, { cwd, windowsHide: true });
+      let stdout = '', stderr = '';
+      proc.stdout.on('data', d => { stdout += d.toString(); });
+      proc.stderr.on('data', d => { stderr += d.toString(); });
+      proc.on('error', reject);
+      proc.on('close', (code) => {
+        if (code === 0) return resolve({ stdout, stderr });
+        return reject(new Error(`make-payload-zip.ps1 failed: code=${code}; stderr=${stderr}`));
+      });
+    });
+
+    await runPs();
+    const zipPath = path.resolve(__dirname, '..', '..', 'scripts', outName);
+    if (!fs.existsSync(zipPath)) return res.status(500).json({ error: 'Zip non trouvé après construction' });
+    const stat = fs.statSync(zipPath);
+
+    // 2) Upload to PHP API as raw body
+    const targetUrl = new URL(`${apiBase}/resources/upload-raw?filename=${encodeURIComponent(outName)}&key=${encodeURIComponent(uploadKey)}`);
+    const mod = targetUrl.protocol === 'https:' ? https : http;
+    const options = {
+      method: 'POST',
+      hostname: targetUrl.hostname,
+      port: targetUrl.port || (targetUrl.protocol === 'https:' ? 443 : 80),
+      path: targetUrl.pathname + targetUrl.search,
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': stat.size
+      },
+      timeout: 300000 // 5 min
+    };
+
+    const upload = () => new Promise((resolve, reject) => {
+      const reqh = mod.request(options, (resp) => {
+        let body = '';
+        resp.on('data', (d) => { body += d.toString(); });
+        resp.on('end', () => {
+          if (resp.statusCode && resp.statusCode >= 200 && resp.statusCode < 300) {
+            try { resolve(JSON.parse(body)); } catch { resolve({ ok: true, raw: body }); }
+          } else {
+            reject(new Error(`Upload failed: status=${resp.statusCode}; body=${body}`));
+          }
+        });
+      });
+      reqh.on('error', reject);
+      reqh.on('timeout', () => { try { reqh.destroy(new Error('timeout')); } catch {} });
+      const stream = fs.createReadStream(zipPath);
+      stream.on('error', reject);
+      stream.pipe(reqh);
+    });
+
+    const resp = await upload();
+    const publicUrl = resp?.url ? (resp.url.startsWith('http') ? resp.url : `https://jts-services.shop${resp.url}`) : null;
+
+    return res.json({ success: true, file: outName, size: stat.size, uploaded: !!publicUrl, url: publicUrl, apiResponse: resp });
+  } catch (e) {
+    console.error('[install-pack/publish] error:', e?.message || e);
+    return res.status(500).json({ error: e?.message || 'Erreur publication' });
+  }
 });

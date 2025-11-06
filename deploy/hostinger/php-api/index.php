@@ -56,6 +56,19 @@ function json($data, $code = 200) {
   exit;
 }
 
+function is_admin($userId) {
+  try {
+    $pdo = db();
+    $stmt = $pdo->prepare('SELECT role FROM profiles WHERE user_id = ? LIMIT 1');
+    $stmt->execute([$userId]);
+    $row = $stmt->fetch();
+    $role = $row ? strtolower((string)$row['role']) : '';
+    return $role === 'admin' || $role === 'owner' || $role === 'superadmin';
+  } catch (Exception $e) {
+    return false;
+  }
+}
+
 // Minimal HS256 JWT (verify + sign)
 function base64url_encode($data) { return rtrim(strtr(base64_encode($data), '+/', '-_'), '='); }
 function base64url_decode($data) { return base64_decode(strtr($data, '-_', '+/')); }
@@ -187,12 +200,28 @@ if ($path === '/api/login' && $method === 'POST') {
   $stmt->execute([$identifier, $identifier]);
   $u = $stmt->fetch();
   if (!$u) json(['message' => 'Utilisateur introuvable'], 404);
+  // Résoudre le nom d'entreprise de manière tolérante (selon colonnes/tables disponibles)
+  $entrepriseName = '';
+  try {
+    $q = "SELECT COALESCE(e.name, p.entreprise, u.entreprise) AS ent
+            FROM users u
+       LEFT JOIN profiles p ON p.user_id = u.id
+       LEFT JOIN stock_entreprise e ON e.id = u.entreprise_id
+           WHERE u.id = ? LIMIT 1";
+    $st = $pdo->prepare($q); $st->execute([$u['id']]); $row = $st->fetch();
+    if ($row && isset($row['ent'])) { $entrepriseName = (string)$row['ent']; }
+  } catch (Exception $e1) {
+    // Fallback: essayer profiles.entreprise
+    try { $st = $pdo->prepare('SELECT entreprise AS ent FROM profiles WHERE user_id = ? LIMIT 1'); $st->execute([$u['id']]); $row = $st->fetch(); if ($row && isset($row['ent'])) $entrepriseName = (string)$row['ent']; } catch (Exception $_) {}
+    // Fallback: essayer users.entreprise
+    if ($entrepriseName === '') { try { $st = $pdo->prepare('SELECT entreprise AS ent FROM users WHERE id = ? LIMIT 1'); $st->execute([$u['id']]); $row = $st->fetch(); if ($row && isset($row['ent'])) $entrepriseName = (string)$row['ent']; } catch (Exception $_) {} }
+  }
   // Attention: si les mots de passe sont hashés bcrypt côté Node, ici il faut password_verify
   if (!password_verify($password, $u['password'])) json(['message' => 'Mot de passe incorrect'], 401);
   $payload = ['id'=>$u['id'],'email'=>$u['email'],'username'=>$u['username'],'iat'=>time(),'exp'=>time()+7200];
   $token = jwt_sign($payload);
   json(['token'=>$token, 'user'=>[
-    'id'=>$u['id'], 'email'=>$u['email'], 'username'=>$u['username'], 'role'=>$u['role'] ?: 'user', 'status'=>$u['status'] ?: 'active', 'entreprise'=>''
+    'id'=>$u['id'], 'email'=>$u['email'], 'username'=>$u['username'], 'role'=>$u['role'] ?: 'user', 'status'=>$u['status'] ?: 'active', 'entreprise'=>$entrepriseName
   ]]);
 }
 
@@ -266,8 +295,22 @@ if ($path === '/api/me' && $method === 'GET') {
   $stmt = $pdo->prepare("SELECT u.id, u.email, p.username, p.role, p.status FROM users u LEFT JOIN profiles p ON u.id=p.user_id WHERE u.id = ? LIMIT 1");
   $stmt->execute([$p['id']]);
   $u = $stmt->fetch(); if (!$u) json(['error'=>'Utilisateur introuvable'], 404);
+  // Résoudre entreprise pour /me
+  $entrepriseName = '';
+  try {
+    $q = "SELECT COALESCE(e.name, p.entreprise, u.entreprise) AS ent
+            FROM users u
+       LEFT JOIN profiles p ON p.user_id = u.id
+       LEFT JOIN stock_entreprise e ON e.id = u.entreprise_id
+           WHERE u.id = ? LIMIT 1";
+    $st = $pdo->prepare($q); $st->execute([$u['id']]); $row = $st->fetch();
+    if ($row && isset($row['ent'])) { $entrepriseName = (string)$row['ent']; }
+  } catch (Exception $e1) {
+    try { $st = $pdo->prepare('SELECT entreprise AS ent FROM profiles WHERE user_id = ? LIMIT 1'); $st->execute([$u['id']]); $row = $st->fetch(); if ($row && isset($row['ent'])) $entrepriseName = (string)$row['ent']; } catch (Exception $_) {}
+    if ($entrepriseName === '') { try { $st = $pdo->prepare('SELECT entreprise AS ent FROM users WHERE id = ? LIMIT 1'); $st->execute([$u['id']]); $row = $st->fetch(); if ($row && isset($row['ent'])) $entrepriseName = (string)$row['ent']; } catch (Exception $_) {} }
+  }
   json(['user'=>[
-    'id'=>$u['id'], 'email'=>$u['email'], 'username'=>$u['username'], 'role'=>$u['role'] ?: 'user', 'status'=>$u['status'] ?: 'active', 'entreprise'=>''
+    'id'=>$u['id'], 'email'=>$u['email'], 'username'=>$u['username'], 'role'=>$u['role'] ?: 'user', 'status'=>$u['status'] ?: 'active', 'entreprise'=>$entrepriseName
   ]]);
 }
 
@@ -461,10 +504,11 @@ if ($path === '/api/stockFlux' && $method === 'GET') {
       $balance = $montant; // encaissement d'une vente (sortie)
     } elseif ($kind === 'achat' || $kind === 'depense') {
       $balance = -$montant; // achat marchandise ou dépense
-    } elseif ($kind === 'mouvement') {
-      $balance = ($type === 'entree') ? $montant : -$montant; // mouvement de stock
     } else {
-      $balance = 0.0; // lignes "mouvement" neutres pour la caisse
+      // IMPORTANT: les mouvements de stock (entree/sortie) n'impactent PAS la caisse
+      // Seuls les paiements clients (sortie), les règlements fournisseurs (achat)
+      // et les dépenses affectent la balance/solde.
+      $balance = 0.0;
     }
     $running += $balance;
     $r['balance'] = $balance;
@@ -520,6 +564,29 @@ if ($path === '/api/stockFlux' && $method === 'GET') {
 }
 
 // --- Profil: mise à jour du champ entreprise (optionnel si colonne absente)
+// GET /api/entreprise -> retourne le nom d'entreprise résolu (tolérant)
+if ($path === '/api/entreprise' && $method === 'GET') {
+  $p = get_token_payload(); if (!$p) json(['error'=>'Token manquant ou invalide'], 401);
+  try {
+    $pdo = db();
+    $entrepriseName = '';
+    try {
+      $q = "SELECT COALESCE(e.name, p.entreprise, u.entreprise) AS ent
+              FROM users u
+         LEFT JOIN profiles p ON p.user_id = u.id
+         LEFT JOIN stock_entreprise e ON e.id = u.entreprise_id
+             WHERE u.id = ? LIMIT 1";
+      $st = $pdo->prepare($q); $st->execute([$p['id']]); $row = $st->fetch();
+      if ($row && isset($row['ent'])) { $entrepriseName = (string)$row['ent']; }
+    } catch (Exception $e1) {
+      try { $st = $pdo->prepare('SELECT entreprise AS ent FROM profiles WHERE user_id = ? LIMIT 1'); $st->execute([$p['id']]); $row = $st->fetch(); if ($row && isset($row['ent'])) $entrepriseName = (string)$row['ent']; } catch (Exception $_) {}
+      if ($entrepriseName === '') { try { $st = $pdo->prepare('SELECT entreprise AS ent FROM users WHERE id = ? LIMIT 1'); $st->execute([$p['id']]); $row = $st->fetch(); if ($row && isset($row['ent'])) $entrepriseName = (string)$row['ent']; } catch (Exception $_) {} }
+    }
+    json(['entreprise' => $entrepriseName]);
+  } catch (Exception $e) { json(['error'=>'db','message'=>$e->getMessage()], 500); }
+}
+
+// PUT /api/entreprise -> met à jour le nom d'entreprise si la colonne existe côté profiles
 if ($path === '/api/entreprise' && $method === 'PUT') {
   $p = get_token_payload(); if (!$p) json(['error'=>'Token manquant ou invalide'], 401);
   $body = json_decode(file_get_contents('php://input'), true) ?: [];
@@ -741,6 +808,22 @@ if (preg_match('#^/api/designations(?:/([0-9]+))?$#', $path, $m)) {
   $pdo = db();
   $id = isset($m[1]) ? intval($m[1]) : 0;
 
+  // GET /api/designations  -> liste (limitée) pour UI
+  if ($method === 'GET' && $id === 0) {
+    try {
+      $q = isset($_GET['q']) ? trim((string)$_GET['q']) : '';
+      if ($q !== '') {
+        $like = "%$q%";
+        $stmt = $pdo->prepare('SELECT id, name, current_stock FROM stock_designations WHERE user_id = ? AND (name LIKE ?) ORDER BY name ASC LIMIT 200');
+        $stmt->execute([$p['id'], $like]);
+      } else {
+        $stmt = $pdo->prepare('SELECT id, name, current_stock FROM stock_designations WHERE user_id = ? ORDER BY name ASC LIMIT 200');
+        $stmt->execute([$p['id']]);
+      }
+      json($stmt->fetchAll());
+    } catch (Exception $e) { json([]); }
+  }
+
   if ($method === 'GET' && $id > 0) {
     try {
       $stmt = $pdo->prepare('SELECT id, name, current_stock FROM stock_designations WHERE id = ? AND user_id = ? LIMIT 1');
@@ -771,6 +854,29 @@ if (preg_match('#^/api/designations(?:/([0-9]+))?$#', $path, $m)) {
     }
   }
 
+  // PATCH /api/designations/:id  { name?, current_stock? }
+  if ($method === 'PATCH' && $id > 0) {
+    $b = json_decode(file_get_contents('php://input'), true) ?: [];
+    $fields = [];$values = [];
+    if (array_key_exists('name', $b)) {
+      $name = trim((string)$b['name']); if ($name === '') json(['error'=>'Nom requis'], 400);
+      $fields[] = 'name = ?'; $values[] = $name;
+    }
+    if (array_key_exists('current_stock', $b)) {
+      $cs = (int)$b['current_stock']; $fields[] = 'current_stock = ?'; $values[] = $cs;
+    }
+    if (count($fields) === 0) json(['error'=>'Aucune donnée à mettre à jour'], 400);
+    try {
+      $stmt = $pdo->prepare('UPDATE stock_designations SET '.implode(', ', $fields).' WHERE id = ? AND user_id = ?');
+      $values[] = $id; $values[] = $p['id'];
+      $stmt->execute($values);
+      $stmt = $pdo->prepare('SELECT id, name, current_stock FROM stock_designations WHERE id = ? AND user_id = ? LIMIT 1');
+      $stmt->execute([$id, $p['id']]); $row = $stmt->fetch();
+      if (!$row) json(['error'=>'Not found'], 404);
+      json($row);
+    } catch (Exception $e) { json(['error'=>'db','message'=>$e->getMessage()], 500); }
+  }
+
   json(['error'=>'Méthode non supportée'], 405);
 }
 
@@ -779,6 +885,22 @@ if (preg_match('#^/api/clients(?:/([0-9]+))?$#', $path, $m)) {
   $p = get_token_payload(); if (!$p) json(['error'=>'Token manquant ou invalide'], 401);
   $pdo = db();
   $id = isset($m[1]) ? intval($m[1]) : 0;
+
+  // GET /api/clients -> liste (limitée) pour UI
+  if ($method === 'GET' && $id === 0) {
+    try {
+      $q = isset($_GET['q']) ? trim((string)$_GET['q']) : '';
+      if ($q !== '') {
+        $like = "%$q%";
+        $stmt = $pdo->prepare('SELECT id, name, address, phone, email FROM stock_clients WHERE user_id = ? AND (name LIKE ? OR phone LIKE ? OR email LIKE ?) ORDER BY name ASC LIMIT 200');
+        $stmt->execute([$p['id'], $like, $like, $like]);
+      } else {
+        $stmt = $pdo->prepare('SELECT id, name, address, phone, email FROM stock_clients WHERE user_id = ? ORDER BY name ASC LIMIT 200');
+        $stmt->execute([$p['id']]);
+      }
+      json($stmt->fetchAll());
+    } catch (Exception $e) { json([]); }
+  }
 
   if ($method === 'GET' && $id > 0) {
     try {
@@ -812,6 +934,29 @@ if (preg_match('#^/api/clients(?:/([0-9]+))?$#', $path, $m)) {
     }
   }
 
+  // PATCH /api/clients/:id  { name?, address?, phone?, email? }
+  if ($method === 'PATCH' && $id > 0) {
+    $b = json_decode(file_get_contents('php://input'), true) ?: [];
+    $fields = [];$values = [];
+    if (array_key_exists('name', $b)) { $name = trim((string)$b['name']); if ($name === '') json(['error'=>'Nom requis'], 400); $fields[] = 'name = ?'; $values[] = $name; }
+    if (array_key_exists('address', $b)) { $fields[] = 'address = ?'; $values[] = trim((string)$b['address']); }
+    if (array_key_exists('phone', $b)) { $fields[] = 'phone = ?'; $values[] = trim((string)$b['phone']); }
+    if (array_key_exists('email', $b)) {
+      $email = trim((string)$b['email']); if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) json(['error'=>'Email invalide'], 400);
+      $fields[] = 'email = ?'; $values[] = $email;
+    }
+    if (count($fields) === 0) json(['error'=>'Aucune donnée à mettre à jour'], 400);
+    try {
+      $stmt = $pdo->prepare('UPDATE stock_clients SET '.implode(', ', $fields).' WHERE id = ? AND user_id = ?');
+      $values[] = $id; $values[] = $p['id'];
+      $stmt->execute($values);
+      $stmt = $pdo->prepare('SELECT id, name, address, phone, email FROM stock_clients WHERE id = ? AND user_id = ? LIMIT 1');
+      $stmt->execute([$id, $p['id']]); $row = $stmt->fetch();
+      if (!$row) json(['error'=>'Not found'], 404);
+      json($row);
+    } catch (Exception $e) { json(['error'=>'db','message'=>$e->getMessage()], 500); }
+  }
+
   json(['error'=>'Méthode non supportée'], 405);
 }
 
@@ -835,8 +980,241 @@ if ($path === '/api/upload-logo' && $method === 'POST') {
   }
 }
 
+// --- Resources (installer pack) ---
+// POST /api/resources/upload-raw?filename=NAME[&key=UPLOAD_SECRET]
+// Body: application/octet-stream (raw file bytes). Saves into /stock/ressources/NAME and returns public URL.
+if ($path === '/api/resources/upload-raw' && $method === 'POST') {
+  $p = get_token_payload();
+  $isAdmin = $p && is_admin((int)$p['id']);
+  $key = isset($_GET['key']) ? trim((string)$_GET['key']) : '';
+  $allowByKey = ($key !== '' && isset($config['upload_secret']) && $config['upload_secret'] !== '' && hash_equals($config['upload_secret'], $key));
+  if (!$isAdmin && !$allowByKey) json(['error' => 'Accès refusé'], 403);
+
+  $filename = isset($_GET['filename']) ? trim((string)$_GET['filename']) : '';
+  if ($filename === '') json(['error' => 'filename requis'], 400);
+  // Sanitize filename and restrict extensions
+  $filename = preg_replace('/[^A-Za-z0-9._-]+/', '_', $filename);
+  $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+  $allowed = ['zip','exe','txt','ps1'];
+  if (!in_array($ext, $allowed, true)) json(['error' => 'Extension non autorisée'], 400);
+
+  // Read raw body
+  $raw = file_get_contents('php://input');
+  if ($raw === false || strlen($raw) === 0) json(['error' => 'Corps vide'], 400);
+
+  // Ensure target dir exists: /public_html/stock/ressources
+  $dir = dirname(__DIR__);
+  // In production, __DIR__ => /public_html/stock/api; dirname => /public_html/stock
+  $resDir = $dir . '/ressources';
+  if (!is_dir($resDir)) { @mkdir($resDir, 0775, true); }
+  if (!is_dir($resDir) || !is_writable($resDir)) json(['error' => 'Impossible d\'écrire dans ressources'], 500);
+
+  $target = $resDir . '/' . $filename;
+  // Avoid accidental overwrite by appending suffix if exists
+  if (file_exists($target)) {
+    $base = pathinfo($filename, PATHINFO_FILENAME);
+    $i = 1; do { $candidate = $base.'_'.$i.'.'.$ext; $i++; } while (file_exists($resDir.'/'.$candidate));
+    $filename = $candidate; $target = $resDir.'/'.$filename;
+  }
+  if (@file_put_contents($target, $raw) === false) json(['error' => 'Echec d\'écriture du fichier'], 500);
+  @chmod($target, 0644);
+
+  $url = '/stock/ressources/'.$filename;
+  // Create/refresh fixed alias for convenience: stock_payload_latest.zip/exe
+  $aliasUrl = null;
+  if (in_array($ext, ['zip','exe'], true)) {
+    $aliasName = 'stock_payload_latest.'.$ext;
+    $aliasPath = $resDir . '/' . $aliasName;
+    // copy or overwrite alias
+    @copy($target, $aliasPath);
+    @chmod($aliasPath, 0644);
+    $aliasUrl = '/stock/ressources/'.$aliasName;
+  }
+
+  json(['success' => true, 'filename' => $filename, 'url' => $url, 'size' => filesize($target), 'alias' => $aliasUrl]);
+}
+
+// GET /api/resources/list -> liste les fichiers disponibles dans /stock/ressources
+if ($path === '/api/resources/list' && $method === 'GET') {
+  // Public listing is acceptable for download convenience; tighten if needed
+  $dir = dirname(__DIR__) . '/ressources';
+  $out = [];
+  if (is_dir($dir)) {
+    $dh = opendir($dir);
+    if ($dh) {
+      while (($f = readdir($dh)) !== false) {
+        if ($f === '.' || $f === '..') continue;
+        $p = $dir . '/' . $f;
+        if (is_file($p)) {
+          $out[] = [
+            'name' => $f,
+            'size' => @filesize($p) ?: 0,
+            'mtime' => @filemtime($p) ?: 0,
+            'url' => '/stock/ressources/'.$f
+          ];
+        }
+      }
+      closedir($dh);
+    }
+    // sort newest first
+    usort($out, function($a,$b){ return ($b['mtime'] <=> $a['mtime']); });
+  }
+  json($out);
+}
+
 // --- Admin stubs / Payments stubs (éviter 404 en mode Hostinger)
-if ($path === '/api/admin/users' && $method === 'GET') { json([]); }
+if ($path === '/api/admin/users' && $method === 'GET') {
+  $p = get_token_payload(); if (!$p) json(['error'=>'Token manquant ou invalide'], 401);
+  if (!is_admin((int)$p['id'])) json(['error'=>'Accès refusé'], 403);
+  try {
+    $pdo = db();
+    // Récupérer la liste des utilisateurs + profils + compteurs (si les tables existent)
+    $sql = 'SELECT u.id, u.full_name, u.email,
+                   COALESCE(p.username, "") AS username,
+                   COALESCE(p.role, "user") AS role,
+                   COALESCE(p.status, "active") AS status,
+                   COALESCE(p.subscription_expires, NULL) AS subscription_expires,
+                   COALESCE(p.free_days, 0) AS free_days,
+                   COALESCE(DATE_FORMAT(u.created_at, "%Y-%m-%d %H:%i:%s"), NULL) AS created_at
+              FROM users u
+         LEFT JOIN profiles p ON p.user_id = u.id
+          ORDER BY u.id ASC
+             LIMIT 500';
+    $stmt = $pdo->query($sql);
+    $rows = $stmt ? $stmt->fetchAll() : [];
+
+    // Résoudre le nom d'entreprise pour chaque utilisateur (tolérant aux schémas partiels)
+    foreach ($rows as &$r) {
+      $r['entreprise'] = '';
+      try {
+        $q = "SELECT COALESCE(e.name, p.entreprise, u.entreprise) AS ent
+                FROM users u
+           LEFT JOIN profiles p ON p.user_id = u.id
+           LEFT JOIN stock_entreprise e ON e.id = u.entreprise_id
+               WHERE u.id = ? LIMIT 1";
+        $st = $pdo->prepare($q); $st->execute([intval($r['id'])]); $row = $st->fetch();
+        if ($row && isset($row['ent'])) { $r['entreprise'] = (string)$row['ent']; }
+      } catch (Exception $e1) {
+        try { $st = $pdo->prepare('SELECT entreprise AS ent FROM profiles WHERE user_id = ? LIMIT 1'); $st->execute([intval($r['id'])]); $row = $st->fetch(); if ($row && isset($row['ent'])) $r['entreprise'] = (string)$row['ent']; } catch (Exception $_) {}
+        if ($r['entreprise'] === '') { try { $st = $pdo->prepare('SELECT entreprise AS ent FROM users WHERE id = ? LIMIT 1'); $st->execute([intval($r['id'])]); $row = $st->fetch(); if ($row && isset($row['ent'])) $r['entreprise'] = (string)$row['ent']; } catch (Exception $_) {} }
+      }
+    }
+
+    // Ajouter compteurs de données par sous-requêtes tolérantes
+    foreach ($rows as &$r) { $r['clients_count']=0; $r['designations_count']=0; $r['mouvements_count']=0; }
+    try {
+      $rs = $pdo->query('SELECT user_id, COUNT(*) AS cnt FROM stock_clients GROUP BY user_id');
+      foreach ($rs->fetchAll() as $x) { foreach ($rows as &$r) if ((int)$r['id'] === (int)$x['user_id']) { $r['clients_count'] = (int)$x['cnt']; } }
+    } catch (Exception $_) {}
+    try {
+      $rs = $pdo->query('SELECT user_id, COUNT(*) AS cnt FROM stock_designations GROUP BY user_id');
+      foreach ($rs->fetchAll() as $x) { foreach ($rows as &$r) if ((int)$r['id'] === (int)$x['user_id']) { $r['designations_count'] = (int)$x['cnt']; } }
+    } catch (Exception $_) {}
+    try {
+      $rs = $pdo->query('SELECT user_id, COUNT(*) AS cnt FROM stock_mouvements GROUP BY user_id');
+      foreach ($rs->fetchAll() as $x) { foreach ($rows as &$r) if ((int)$r['id'] === (int)$x['user_id']) { $r['mouvements_count'] = (int)$x['cnt']; } }
+    } catch (Exception $_) {}
+  json($rows);
+  } catch (Exception $e) {
+    json(['error'=>'db','message'=>$e->getMessage()], 500);
+  }
+}
+
+// DELETE /api/admin/users/:id — supprimer un utilisateur et ses données
+if (preg_match('#^/api/admin/users/(\d+)$#', $path, $m) && $method === 'DELETE') {
+  $p = get_token_payload(); if (!$p) json(['error'=>'Token manquant ou invalide'], 401);
+  if (!is_admin((int)$p['id'])) json(['error'=>'Accès refusé'], 403);
+  $id = intval($m[1]); if ($id <= 0) json(['error'=>'ID invalide'], 400);
+  if ((int)$p['id'] === $id) json(['error'=>'Impossible de supprimer votre propre compte'], 400);
+  try {
+    $pdo = db();
+    // Ne pas supprimer un compte admin
+    try {
+      $st = $pdo->prepare('SELECT role FROM profiles WHERE user_id = ? LIMIT 1');
+      $st->execute([$id]); $row = $st->fetch();
+      if ($row && isset($row['role']) && $row['role'] === 'admin') json(['error'=>'Impossible de supprimer un compte administrateur'], 403);
+    } catch (Exception $_) {}
+
+    // Suppressions tolérantes par user_id (ordre sûr)
+    $safeExec = function($sql, $params) use ($pdo) {
+      try { $pdo->prepare($sql)->execute($params); } catch (Exception $_) {}
+    };
+    $safeExec('DELETE FROM stock_paiements WHERE user_id = ?', [$id]);
+    $safeExec('DELETE FROM stock_depenses WHERE user_id = ?', [$id]);
+    $safeExec('DELETE FROM stock_mouvements WHERE user_id = ?', [$id]);
+    $safeExec('DELETE FROM stock_clients WHERE user_id = ?', [$id]);
+    $safeExec('DELETE FROM stock_designations WHERE user_id = ?', [$id]);
+    $safeExec('DELETE FROM password_resets WHERE user_id = ?', [$id]);
+    $safeExec('DELETE FROM profiles WHERE user_id = ?', [$id]);
+    $safeExec('DELETE FROM users WHERE id = ?', [$id]);
+
+    json(['success'=>true, 'deleted_user_id'=>$id]);
+  } catch (Exception $e) {
+    json(['error'=>'db','message'=>$e->getMessage()], 500);
+  }
+}
+
+// POST /api/admin/users/:id/revoke
+if (preg_match('#^/api/admin/users/(\d+)/revoke$#', $path, $m) && $method === 'POST') {
+  $p = get_token_payload(); if (!$p) json(['error'=>'Token manquant ou invalide'], 401);
+  if (!is_admin((int)$p['id'])) json(['error'=>'Accès refusé'], 403);
+  $id = intval($m[1]); if ($id <= 0) json(['error'=>'ID invalide'], 400);
+  try {
+    $pdo = db();
+    try { $stmt = $pdo->prepare('UPDATE profiles SET status = ? WHERE user_id = ?'); $stmt->execute(['revoked', $id]); } catch (Exception $_) {}
+    json(['success'=>true]);
+  } catch (Exception $e) { json(['error'=>'db','message'=>$e->getMessage()], 500); }
+}
+
+// POST /api/admin/users/:id/subscription { months }
+if (preg_match('#^/api/admin/users/(\d+)/subscription$#', $path, $m) && $method === 'POST') {
+  $p = get_token_payload(); if (!$p) json(['error'=>'Token manquant ou invalide'], 401);
+  if (!is_admin((int)$p['id'])) json(['error'=>'Accès refusé'], 403);
+  $id = intval($m[1]); if ($id <= 0) json(['error'=>'ID invalide'], 400);
+  $body = json_decode(file_get_contents('php://input'), true) ?: [];
+  $months = isset($body['months']) ? max(1, intval($body['months'])) : 1;
+  try {
+    $pdo = db();
+    $current = null;
+    try { $st = $pdo->prepare('SELECT subscription_expires FROM profiles WHERE user_id = ? LIMIT 1'); $st->execute([$id]); $row = $st->fetch(); if ($row) $current = $row['subscription_expires']; } catch (Exception $_) {}
+    $base = $current ? strtotime($current) : time(); if ($base === false) $base = time();
+    $next = date('Y-m-d H:i:s', strtotime("+$months month", $base));
+    try { $st = $pdo->prepare('UPDATE profiles SET subscription_expires = ?, status = ? WHERE user_id = ?'); $st->execute([$next, 'active', $id]); } catch (Exception $_) {}
+    json(['success'=>true, 'subscription_expires'=>$next]);
+  } catch (Exception $e) { json(['error'=>'db','message'=>$e->getMessage()], 500); }
+}
+
+// POST /api/admin/users/:id/free-days { days }
+if (preg_match('#^/api/admin/users/(\d+)/free-days$#', $path, $m) && $method === 'POST') {
+  $p = get_token_payload(); if (!$p) json(['error'=>'Token manquant ou invalide'], 401);
+  if (!is_admin((int)$p['id'])) json(['error'=>'Accès refusé'], 403);
+  $id = intval($m[1]); if ($id <= 0) json(['error'=>'ID invalide'], 400);
+  $body = json_decode(file_get_contents('php://input'), true) ?: [];
+  $days = isset($body['days']) ? max(1, intval($body['days'])) : 1;
+  try {
+    $pdo = db();
+    $cur = 0; try { $st = $pdo->prepare('SELECT free_days FROM profiles WHERE user_id = ? LIMIT 1'); $st->execute([$id]); $row = $st->fetch(); if ($row) $cur = intval($row['free_days']); } catch (Exception $_) {}
+    $next = $cur + $days; try { $st = $pdo->prepare('UPDATE profiles SET free_days = ? WHERE user_id = ?'); $st->execute([$next, $id]); } catch (Exception $_) {}
+    json(['success'=>true, 'free_days'=>$next]);
+  } catch (Exception $e) { json(['error'=>'db','message'=>$e->getMessage()], 500); }
+}
+
+// POST /api/admin/users/:id/reset-password-init -> génère un code (optionnellement persisté)
+if (preg_match('#^/api/admin/users/(\d+)/reset-password-init$#', $path, $m) && $method === 'POST') {
+  $p = get_token_payload(); if (!$p) json(['error'=>'Token manquant ou invalide'], 401);
+  if (!is_admin((int)$p['id'])) json(['error'=>'Accès refusé'], 403);
+  $id = intval($m[1]); if ($id <= 0) json(['error'=>'ID invalide'], 400);
+  try {
+    $code = bin2hex(random_bytes(3));
+    $expires = date('Y-m-d H:i:s', time() + 15*60);
+    try {
+      $pdo = db();
+      $pdo->prepare('DELETE FROM password_resets WHERE user_id = ?')->execute([$id]);
+      $pdo->prepare('INSERT INTO password_resets (user_id, code, expires_at) VALUES (?, ?, ?)')->execute([$id, $code, $expires]);
+    } catch (Exception $_) { /* table optionnelle */ }
+    json(['success'=>true, 'code'=>$code, 'expires_at'=>$expires]);
+  } catch (Exception $e) { json(['error'=>'server','message'=>$e->getMessage()], 500); }
+}
 if ($path === '/api/payments/wave/initiate' && $method === 'POST') { json(['ok'=>false,'message'=>'Paiement non activé dans ce mode']); }
 if ($path === '/api/payments/wave/initiate/self' && $method === 'POST') { json(['ok'=>false,'message'=>'Paiement non activé dans ce mode']); }
 if ($path === '/api/payments/wave/webhook' && $method === 'POST') { json(['ok'=>true]); }

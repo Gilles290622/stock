@@ -72,6 +72,7 @@ app.use("/api/clients", authenticateToken, subscriptionGuard, clientsRoutes);
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api/sync', syncRoutes);
 app.use('/api/payments', require('./routes/payments'));
+app.use('/api/resources', require('./routes/resources'));
 // leave update-profile mounted if you have a dedicated route file
 app.use('/api/update-profile', require('./routes/update-profile'));
 app.use('/api/entreprise', require('./routes/entreprise'));

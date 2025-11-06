@@ -37,10 +37,44 @@ $repo = $null
 foreach ($c in $candidates) {
   if ($c -and (Test-Path (Join-Path $c 'backend\package.json'))) { $repo = $c; break }
 }
+
+# Option: si -PayloadZip pointe vers une URL HTTP(S), télécharge-la d'abord vers %TEMP%
+function Ensure-Tls12 {
+  try {
+    $sp = [Net.ServicePointManager]::SecurityProtocol
+    if (($sp -band [Net.SecurityProtocolType]::Tls12) -eq 0) {
+      [Net.ServicePointManager]::SecurityProtocol = $sp -bor [Net.SecurityProtocolType]::Tls12
+    }
+  } catch {}
+}
+
+if ($PayloadZip -and ($PayloadZip -match '^(https?)://')) {
+  try {
+    Ensure-Tls12
+    $tmpZip = Join-Path $env:TEMP 'stock_payload_download.zip'
+    Write-Step "Téléchargement du paquet depuis $PayloadZip …"
+    Invoke-WebRequest -Uri $PayloadZip -OutFile $tmpZip -UseBasicParsing -TimeoutSec 600
+    if (Test-Path $tmpZip) { $PayloadZip = $tmpZip }
+  } catch { Write-Warning "Téléchargement échoué: $($_.Exception.Message)" }
+}
+
 if (-not $PayloadZip) {
   # Chercher un zip par défaut à côté de l'exe
   $defaultZip = Join-Path $exeDir 'stock_payload.zip'
   if (Test-Path $defaultZip) { $PayloadZip = $defaultZip }
+}
+
+# Nouvelle logique: si aucun ZIP local et aucune copie de dépôt, tenter Hostinger (alias latest)
+if (-not $PayloadZip -and -not $repo) {
+  $latestUrl = $env:STOCK_INSTALLER_URL
+  if (-not $latestUrl) { $latestUrl = 'https://jts-services.shop/stock/ressources/stock_payload_latest.zip' }
+  try {
+    Ensure-Tls12
+    $tmpZip2 = Join-Path $env:TEMP 'stock_payload_latest.zip'
+    Write-Step "Téléchargement du dernier paquet depuis Hostinger: $latestUrl"
+    Invoke-WebRequest -Uri $latestUrl -OutFile $tmpZip2 -UseBasicParsing -TimeoutSec 600
+    if (Test-Path $tmpZip2) { $PayloadZip = $tmpZip2 }
+  } catch { Write-Warning "Impossible de récupérer le paquet depuis Hostinger: $($_.Exception.Message)" }
 }
 
 # Déterminer le mode: zip (si présent) sinon copie locale sinon clonage
@@ -48,7 +82,7 @@ $mode = if ($PayloadZip -and (Test-Path $PayloadZip)) { 'zip' } elseif ($repo) {
 
 $target = Join-Path ("$Drive`:") $FolderName
 switch ($mode) {
-  'zip'   { Write-Step "Source: archive protégée -> $PayloadZip" }
+  'zip'   { Write-Step "Source: archive (Hostinger/locale) -> $PayloadZip" }
   'copy'  { Write-Step "Source: $repo" }
   'clone' { Write-Step "Source: GitHub (clone)" }
 }
@@ -79,7 +113,10 @@ if ($mode -eq 'copy') {
   } catch { Write-Warning "Configuration Git ignorée: $($_.Exception.Message)" }
 } elseif ($mode -eq 'zip') {
   # Extraction depuis zip protégé par mot de passe
-  if (-not $ZipPassword) { $ZipPassword = $Password }
+  if (-not $ZipPassword) {
+    $ZipPassword = Read-Host -Prompt 'Mot de passe du ZIP (Entrée si identique au mot de passe d''installation)'
+    if (-not $ZipPassword) { $ZipPassword = $Password }
+  }
   if (-not $ZipPassword) { Write-Error "Mot de passe du ZIP requis (paramètre -ZipPassword)."; exit 1 }
 
   function Get-7zPath {
@@ -117,8 +154,19 @@ if ($mode -eq 'copy') {
 
   Write-Step 'Extraction de l\'archive protégée…'
   # -y yes to all, -p password, -o output dir
-  $args = @('x', '"' + $PayloadZip + '"', '-y', ('-p' + $ZipPassword), ('-o' + $target))
-  Start-Process -FilePath $sevenZip -ArgumentList $args -Wait -NoNewWindow
+  $args = @('x', $PayloadZip, '-y', ('-p' + $ZipPassword), ('-o' + $target))
+  $proc = Start-Process -FilePath $sevenZip -ArgumentList $args -Wait -NoNewWindow -PassThru
+  if ($proc.ExitCode -ne 0) {
+    Write-Warning 'Extraction échouée. Le mot de passe du ZIP est peut-être différent de celui de l\'installation.'
+    $ZipPassword = Read-Host -Prompt 'Saisir le mot de passe du ZIP pour réessayer'
+    if (-not $ZipPassword) { Write-Error 'Mot de passe du ZIP requis.'; exit 1 }
+    $args = @('x', $PayloadZip, '-y', ('-p' + $ZipPassword), ('-o' + $target))
+    $proc = Start-Process -FilePath $sevenZip -ArgumentList $args -Wait -NoNewWindow -PassThru
+    if ($proc.ExitCode -ne 0) {
+      Write-Error 'Extraction impossible: mot de passe ZIP incorrect ou archive corrompue. Veuillez vérifier le mot de passe et réessayer.'
+      exit 1
+    }
+  }
   $repo = $target
 }
 
@@ -229,13 +277,27 @@ if (-not $SkipNpm) {
 
 # 6) Créer raccourcis
 Write-Step 'Création des raccourcis sur le Bureau…'
-$cs = Join-Path $target 'create-shortcut.ps1'
-if (-not (Test-Path $cs)) { throw "create-shortcut.ps1 introuvable à $cs" }
+$cs = Join-Path $target 'scripts\create-shortcut.ps1'
+if (-not (Test-Path $cs)) { $cs = Join-Path $repo 'scripts\create-shortcut.ps1' }
+if (-not (Test-Path $cs)) { throw "create-shortcut.ps1 introuvable (ni dans $target\\scripts ni dans $repo\\scripts)" }
 
-# Local
-powershell -NoProfile -ExecutionPolicy Bypass -File $cs -Url 'http://127.0.0.1/stock' -Name 'JTS Stock (Local)' | Out-Null
-# En ligne
-powershell -NoProfile -ExecutionPolicy Bypass -File $cs -Url 'https://jts-services.shop/stock' -Name 'JTS Stock (En ligne)' | Out-Null
+# Icônes (local / online)
+$iconCandidates = @(
+  (Join-Path $target 'frontend\public\jtservices.ico'),
+  (Join-Path $target 'frontend\public\favicon.ico')
+)
+$iconLocal = $iconCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+$iconBlueCandidates = @(
+  (Join-Path $target 'frontend\public\jtservices_blue.ico'),
+  (Join-Path $target 'frontend\public\jtservices.ico'),
+  (Join-Path $target 'frontend\public\favicon.ico')
+)
+$iconOnline = $iconBlueCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+# Local (icône par défaut)
+powershell -NoProfile -ExecutionPolicy Bypass -File $cs -Url 'http://127.0.0.1/stock' -Name 'JTS Stock (Local)' -Icon $iconLocal | Out-Null
+# En ligne (préférence icône _blue si présente)
+powershell -NoProfile -ExecutionPolicy Bypass -File $cs -Url 'https://jts-services.shop/stock' -Name 'JTS Stock (En ligne)' -Icon $iconOnline | Out-Null
 
 # Raccourci de mise à jour (git pull)
 try {
@@ -246,6 +308,7 @@ try {
   $iconCandidates = @(
     (Join-Path $target 'frontend\public\jtservices.ico'),
     (Join-Path $target 'frontend\public\favicon.ico'),
+    (Join-Path $target 'frontend\public\jtservices.png'),
     (Join-Path $target 'frontend\public\jtservices.jpg')
   )
   $iconPath = $iconCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1

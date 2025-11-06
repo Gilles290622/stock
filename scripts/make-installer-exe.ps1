@@ -35,8 +35,12 @@ if (-not (Get-Module -ListAvailable -Name ps2exe)) {
 }
 Import-Module ps2exe -Force
 
-# Icône de l'installeur (facultatif)
-$icon = Join-Path $here '..\frontend\public\jtservices.ico'
+# Icône de l'installeur (facultatif) – prioriser jtservices.ico
+$iconCandidates = @(
+  (Join-Path $here '..\frontend\public\jtservices.ico'),
+  (Join-Path $here '..\frontend\public\favicon.ico')
+)
+$icon = $iconCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 
 Write-Host '[ps2exe] compilation…'
 Invoke-ps2exe -InputFile $src -OutputFile $outFull -iconFile $icon -noConsole -title 'JTS Stock Installer' -version '1.0.0' -requireAdmin
