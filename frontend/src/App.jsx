@@ -10,7 +10,9 @@ import Login from "./components/Login";
 import Register from "./components/Register";
 import Profile from "./components/Profile";
 import ProfileSettings from "./components/ProfileSettings";
+import DebugAvatar from "./components/DebugAvatar";
 import FullScreenLoader from "./components/FullScreenLoader";
+import PayPage from "./pages/PayPage";
 
 // Simule la récupération du user depuis le token/localStorage
 function getUserFromToken(token) {
@@ -146,10 +148,20 @@ function AppContent() {
   };
 
   const handleProfileUpdate = (updatedUser) => {
-    if (updatedUser?.logo) {
-      try { localStorage.setItem('user_logo', updatedUser.logo); } catch {}
-    }
-    setUser({ ...user, ...updatedUser });
+    let logo = updatedUser?.logo || user?.logo || '';
+    // Normaliser chemins pour éviter /stock/stock/ duplication
+    try {
+      logo = logo.replace(/\/stock\/stock\//g, '/stock/');
+      // Harmoniser avatar par défaut
+      if (logo === '/default-avatar.svg') logo = '/stock/default-avatar.svg';
+      // Si le logo contient l'origine complète (http/https) on le laisse inchangé
+      if (!/^https?:\/\//i.test(logo)) {
+        // Supprimer double base encore présente
+        logo = logo.replace(/^(\/stock){2,}/, '/stock');
+      }
+      if (logo) localStorage.setItem('user_logo', logo);
+    } catch {}
+    setUser({ ...user, ...updatedUser, logo });
   };
 
   // PrivateRoute pour protéger les routes sensibles
@@ -249,6 +261,22 @@ function AppContent() {
               element={
                 user
                   ? <ProfileSettings user={user} onUpdate={handleProfileUpdate} />
+                  : <Navigate to="/login" />
+              }
+            />
+            <Route
+              path="/debug/avatar"
+              element={
+                user
+                  ? <DebugAvatar user={user} />
+                  : <Navigate to="/login" />
+              }
+            />
+            <Route
+              path="/pay"
+              element={
+                user
+                  ? <PayPage />
                   : <Navigate to="/login" />
               }
             />
